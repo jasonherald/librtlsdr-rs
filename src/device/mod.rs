@@ -28,7 +28,17 @@ pub use builder::RtlSdrDeviceBuilder;
 #[cfg(feature = "tokio")]
 mod streaming_tokio;
 #[cfg(feature = "tokio")]
-pub use streaming_tokio::SampleStream;
+pub use streaming_tokio::TokioSampleStream;
+
+#[cfg(feature = "async-std")]
+mod streaming_async_std;
+#[cfg(feature = "async-std")]
+pub use streaming_async_std::AsyncStdSampleStream;
+
+#[cfg(feature = "smol")]
+mod streaming_smol;
+#[cfg(feature = "smol")]
+pub use streaming_smol::SmolSampleStream;
 
 use crate::constants::*;
 use crate::error::RtlSdrError;
