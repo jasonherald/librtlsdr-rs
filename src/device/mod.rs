@@ -20,9 +20,15 @@ pub use enumerate::{
     DeviceInfo, get_device_count, get_device_name, get_device_usb_strings, get_index_by_serial,
     list_devices,
 };
+pub use streaming::SampleIter;
 
 mod builder;
 pub use builder::RtlSdrDeviceBuilder;
+
+#[cfg(feature = "tokio")]
+mod streaming_tokio;
+#[cfg(feature = "tokio")]
+pub use streaming_tokio::SampleStream;
 
 use crate::constants::*;
 use crate::error::RtlSdrError;

@@ -11,5 +11,21 @@ rusb.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+# Async-runtime integrations are opt-in. Each runtime gets its
+# own feature flag so consumers pull in only what they use; the
+# Iterator-based sync streaming path needs no features at all.
+# Round 3a (this crate) adds `tokio`; round 3b will add `async-std`
+# and `smol` with the same shape. Per #626.
+futures-core = { version = "0.3", optional = true }
+tokio = { version = "1", default-features = false, features = ["sync", "rt"], optional = true }
+
+[features]
+default = []
+# Enables `RtlSdrDevice::stream_samples_tokio` — a `Stream` impl
+# backed by `tokio::task::spawn_blocking` and `tokio::sync::mpsc`.
+# Pulls in `tokio` (sync + rt features only; no multi-thread
+# runtime dep) and `futures-core` for the `Stream` trait.
+tokio = ["dep:tokio", "dep:futures-core"]
+
 [lints]
 workspace = true
