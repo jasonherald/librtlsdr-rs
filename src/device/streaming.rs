@@ -79,6 +79,60 @@ impl RtlSdrDevice {
         }
     }
 
+    /// Iterate IQ samples as a sequence of owned byte buffers.
+    ///
+    /// Returns an `Iterator` whose [`Iterator::next`] blocks the
+    /// calling thread until one buffer's worth of samples is ready
+    /// (a single `read_sync` underneath), then yields a freshly-
+    /// allocated `Vec<u8>` of the actual byte count read. Each
+    /// item is `Result<Vec<u8>, RtlSdrError>` so transport errors
+    /// surface in-band; the iterator fuses (returns `None` from
+    /// then on) after the first error or a zero-length read.
+    ///
+    /// This is the foundation for both sync streaming (use
+    /// directly) and async streaming wrappers (the per-runtime
+    /// `stream_samples_*` methods drive this iterator inside a
+    /// blocking task).
+    ///
+    /// # Buffer size
+    ///
+    /// `buffer_size` is the bytes-per-yield target. The librtlsdr
+    /// default is 256 KB (16 × 32 × 512). Smaller buffers give
+    /// lower per-item latency but more allocator traffic; larger
+    /// buffers amortise USB overhead but increase per-buffer
+    /// latency. The size doesn't have to be a multiple of the USB
+    /// 512-byte packet — `read_sync` returns the actual byte count
+    /// — but multiples of 512 avoid short final transfers.
+    ///
+    /// # Allocation
+    ///
+    /// Each yielded `Vec<u8>` is a fresh allocation. At the
+    /// 256 KB / 65 ms cadence of typical RTL-SDR rates this is
+    /// negligible (~15 allocs/sec), but for tight loops or
+    /// embedded use prefer [`Self::read_sync`] directly with a
+    /// reused caller-owned buffer.
+    ///
+    /// ```no_run
+    /// # use sdr_rtlsdr::{RtlSdrDevice, RtlSdrError};
+    /// # fn main() -> Result<(), RtlSdrError> {
+    /// let dev = RtlSdrDevice::open(0)?;
+    /// dev.reset_buffer()?;
+    /// // Take the first 10 buffers — each ~65 ms at 2 Msps.
+    /// for chunk in dev.iter_samples(262_144).take(10) {
+    ///     let bytes = chunk?;
+    ///     // process `bytes`...
+    ///     # let _ = bytes;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn iter_samples(&self, buffer_size: usize) -> SampleIter<'_> {
+        SampleIter {
+            device: Some(self),
+            buffer_size,
+        }
+    }
+
     /// Read IQ samples in a blocking loop, calling the callback for each buffer.
     ///
     /// This is a simplified port of `rtlsdr_read_async`. It blocks the calling
@@ -129,4 +183,71 @@ impl RtlSdrDevice {
 
         Ok(())
     }
+}
+
+/// Blocking iterator over IQ-sample buffers, returned by
+/// [`RtlSdrDevice::iter_samples`].
+///
+/// Each [`Iterator::next`] call performs one [`RtlSdrDevice::read_sync`]
+/// into a freshly-allocated `Vec<u8>` and yields it. The iterator
+/// fuses on the first error or zero-length read — once `next`
+/// returns `Some(Err(_))` (or `None` from a zero read), all
+/// subsequent calls return `None` so callers can use the standard
+/// `for chunk in iter { let chunk = chunk?; ... }` shape without
+/// worrying about post-error state.
+pub struct SampleIter<'a> {
+    /// `None` once the iterator has fused (error or zero read).
+    /// Borrows the device shared (`&`) because [`RtlSdrDevice::read_sync`]
+    /// is `&self` — the underlying USB bulk transfer doesn't need
+    /// mutable access.
+    device: Option<&'a RtlSdrDevice>,
+    buffer_size: usize,
+}
+
+impl Iterator for SampleIter<'_> {
+    type Item = Result<Vec<u8>, RtlSdrError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let device = self.device?;
+        let mut buf = vec![0u8; self.buffer_size];
+        match device.read_sync(&mut buf) {
+            Ok(0) => {
+                // Zero-length read — treat as end-of-stream so
+                // callers using `.take(N)` / `for ... in iter`
+                // don't spin forever on a degenerate device.
+                self.device = None;
+                None
+            }
+            Ok(n) => {
+                buf.truncate(n);
+                Some(Ok(buf))
+            }
+            Err(e) => {
+                // Fuse after first error so subsequent calls
+                // return `None` rather than re-yielding the
+                // same error indefinitely.
+                self.device = None;
+                Some(Err(e))
+            }
+        }
+    }
+}
+
+impl std::iter::FusedIterator for SampleIter<'_> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Pin the trait-impl contract documented on `SampleIter` —
+    // standard `Iterator` + `FusedIterator` so consumers can rely
+    // on `for x in iter` shape AND on the post-fuse-returns-None
+    // contract without empirical testing. If a refactor ever
+    // changes the iterator shape, this fires at compile time.
+    const _: fn() = || {
+        fn assert_iter<T: Iterator>() {}
+        fn assert_fused<T: std::iter::FusedIterator>() {}
+        assert_iter::<SampleIter<'_>>();
+        assert_fused::<SampleIter<'_>>();
+    };
 }
