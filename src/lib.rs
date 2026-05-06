@@ -53,16 +53,23 @@
 //! # USB context + threading
 //!
 //! [`RtlSdrDevice`] holds an `Arc<rusb::DeviceHandle>` internally so
-//! the device handle can be shared across threads safely. The control
-//! methods take `&mut self` and serialise on the caller; bulk reads
-//! via [`RtlSdrDevice::read_sync`] are concurrency-safe with separate
-//! control calls because rusb's bulk transfers are independent of the
-//! control endpoint.
+//! the device handle can be cloned across threads — `rusb::DeviceHandle`
+//! is `Sync`, which makes the type *shareable* between threads. The
+//! control methods on [`RtlSdrDevice`] take `&mut self` and serialise
+//! on the caller; that's the supported single-thread pattern.
 //!
 //! For raw bulk reads on a worker thread (e.g. an `rtl_tcp`-style
 //! server), call [`RtlSdrDevice::usb_handle`] to clone the underlying
 //! handle and use [`RtlSdrDevice::BULK_ENDPOINT`] for the endpoint
-//! address.
+//! address. **Note that `Sync` alone does not guarantee that
+//! concurrent bulk and control transfers on the same handle are
+//! safe** — `rusb`'s docs don't make that claim explicitly, and
+//! libusb's caveats restrict per-resource concurrent access. If you
+//! mix concurrent bulk and control on one handle, treat it as an
+//! unsupported design assumption you've verified against your
+//! libusb version + dongle hardware. The safer pattern is to
+//! quiesce control calls (or do them all from one thread) while a
+//! bulk-read worker is in flight.
 //!
 //! # Faithful-port note
 //!
@@ -92,21 +99,22 @@
     clippy::manual_range_contains,
     clippy::needless_range_loop,
     clippy::implicit_saturating_sub,
-    clippy::doc_markdown,
-    // Faithful port from librtlsdr's C source: register addresses,
-    // hardware constants, and tuner-IC enum variants are kept for
-    // completeness even when not currently called from Rust. The
-    // public surface of the crate (now scoped down — see
-    // `RtlSdrDevice` and the top-level re-exports) is what we're
-    // committing to; keeping the internals around makes future
-    // hardware-feature work a register-table read away rather than
-    // a re-port. Per #626 visibility audit.
-    dead_code
+    clippy::doc_markdown
 )]
 
+// Faithful-port modules: `constants` and `reg` transcribe register
+// addresses and hardware magic numbers from upstream `librtlsdr`'s C
+// source. We keep the full table around even when not currently
+// called from Rust so future hardware-feature work is a register-
+// table read away rather than a re-port. Scoped `dead_code` allow
+// (rather than crate-level) means accidental dead paths in `device`,
+// `error`, or any future addition still get caught by the lint. Per
+// #630 CR round 2.
+#[allow(dead_code)]
 pub(crate) mod constants;
 pub mod device;
 pub mod error;
+#[allow(dead_code)]
 pub(crate) mod reg;
 // `tuner` is the internal abstraction layer over the five tuner-IC
 // backends (R820T2 / E4000 / FC0012 / FC0013 / FC2580). The `Tuner`
