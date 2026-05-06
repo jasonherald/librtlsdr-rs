@@ -108,7 +108,15 @@ pub(crate) mod constants;
 pub mod device;
 pub mod error;
 pub(crate) mod reg;
-pub mod tuner;
+// `tuner` is the internal abstraction layer over the five tuner-IC
+// backends (R820T2 / E4000 / FC0012 / FC0013 / FC2580). The `Tuner`
+// trait takes raw `rusb::DeviceHandle` parameters because the per-IC
+// I2C transactions need direct USB control-transfer access — that's
+// not a shape we want in the committed semver surface. External
+// consumers control the tuner through `RtlSdrDevice` methods
+// (`set_tuner_gain`, `set_tuner_bandwidth`, etc.) which dispatch
+// internally to the right backend. Per #630 CR round 1.
+pub(crate) mod tuner;
 pub(crate) mod usb;
 
 pub use device::{
