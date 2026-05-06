@@ -77,7 +77,7 @@ impl RtlSdrDevice {
     ///
     /// let dev = RtlSdrDevice::open(0)?;
     /// dev.reset_buffer()?;
-    /// let stream = dev.stream_samples_tokio(262_144);
+    /// let stream = dev.stream_samples_tokio(262_144)?;
     /// let mut stream: Pin<Box<dyn Stream<Item = _>>> = Box::pin(stream);
     /// // futures_util::StreamExt::next() — left to the consumer's choice of helper crate.
     /// # Ok(())
@@ -93,39 +93,87 @@ impl RtlSdrDevice {
     ///
     /// Must be called from inside a tokio runtime context (the
     /// implementation calls [`tokio::task::spawn_blocking`]
-    /// internally). Calling outside a runtime panics with the
-    /// usual tokio "no reactor running" message — caller
-    /// responsibility to ensure the calling task is on a tokio
-    /// runtime before invoking.
-    #[must_use]
-    pub fn stream_samples_tokio(self, buffer_size: usize) -> SampleStream {
+    /// internally). Returns
+    /// [`RtlSdrError::InvalidParameter`] when called outside a
+    /// runtime — checked via
+    /// [`tokio::runtime::Handle::try_current`] before any task
+    /// spawn so the failure mode is a clean error instead of
+    /// the runtime's own panic.
+    ///
+    /// # Drop semantics
+    ///
+    /// When the consumer drops the [`SampleStream`], the worker
+    /// observes the closed channel **between** USB reads and
+    /// exits cleanly — typical drop latency is one read cadence
+    /// (~65 ms at 2 Msps with the default 256 KB buffer). On a
+    /// stalled device the worst case is one read timeout (5 s
+    /// per [`RtlSdrDevice::read_sync`]). For sub-millisecond
+    /// cancellation of an in-flight bulk transfer we'd need
+    /// libusb's async-submit + cancel API rather than the
+    /// blocking read; that's tracked as #633 rather than done
+    /// here. Per #632 CR round 1.
+    ///
+    /// # Errors
+    ///
+    /// - [`RtlSdrError::InvalidParameter`] if no tokio runtime
+    ///   is active when this method is called.
+    pub fn stream_samples_tokio(self, buffer_size: usize) -> Result<SampleStream, RtlSdrError> {
+        // Preflight runtime check. `tokio::task::spawn_blocking`
+        // doesn't document its outside-runtime behaviour but
+        // panics in practice; library code shouldn't panic, so
+        // detect explicitly via `try_current` and return an
+        // `RtlSdrError`. Per #632 CR round 1.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(RtlSdrError::InvalidParameter(
+                "stream_samples_tokio must be called from within a Tokio runtime".to_string(),
+            ));
+        }
+
         let (tx, rx) = tokio::sync::mpsc::channel(STREAM_BACKPRESSURE_DEPTH);
 
         // The blocking task owns the device for the duration
         // of the stream — no `Arc<Mutex<…>>`, no shared
         // mutable access. When the consumer drops the
-        // `SampleStream`, `tx.blocking_send` returns `Err`
-        // and we exit; tokio's runtime drops the task's stack
-        // including the device, which runs `Drop` and
-        // releases the USB interface cleanly.
+        // `SampleStream` the channel closes; we observe that
+        // via `tx.is_closed()` between reads (so a healthy
+        // streaming device exits within one buffer cadence)
+        // and via `tx.blocking_send` returning `Err` after the
+        // read (so a still-completing read isn't wasted). On
+        // exit, tokio's runtime drops the task's stack
+        // including the device, which runs `Drop` and releases
+        // the USB interface cleanly.
         tokio::task::spawn_blocking(move || {
             let dev = self;
-            for chunk in dev.iter_samples(buffer_size) {
-                let is_err = chunk.is_err();
-                if tx.blocking_send(chunk).is_err() {
-                    // Consumer dropped — exit silently.
+            let mut iter = dev.iter_samples(buffer_size);
+            loop {
+                // Pre-read drop check: catches the common case
+                // of a consumer dropping the stream during the
+                // brief window between reads. For an in-flight
+                // read we still wait for it to return (see
+                // method-level "Drop semantics" docs).
+                if tx.is_closed() {
                     return;
                 }
-                if is_err {
-                    // Iterator fuses on error; yielding once
-                    // here matches the documented "yields the
-                    // error, then `None`" contract.
-                    return;
+                match iter.next() {
+                    Some(chunk) => {
+                        let is_err = chunk.is_err();
+                        if tx.blocking_send(chunk).is_err() {
+                            return;
+                        }
+                        if is_err {
+                            // Iterator fuses on error; yielding
+                            // once matches the documented
+                            // "yields the error, then `None`"
+                            // contract.
+                            return;
+                        }
+                    }
+                    None => return,
                 }
             }
         });
 
-        SampleStream { rx }
+        Ok(SampleStream { rx })
     }
 }
 

@@ -127,6 +127,19 @@ impl RtlSdrDevice {
     /// # }
     /// ```
     pub fn iter_samples(&self, buffer_size: usize) -> SampleIter<'_> {
+        // Normalise zero to the librtlsdr-equivalent default
+        // (256 KB). A `buffer_size == 0` typo would otherwise
+        // hand `read_sync` an empty slice, which the USB
+        // backend treats as an immediate zero-length read —
+        // the iterator's zero-fuse path triggers, and the
+        // caller sees an empty `for chunk in iter { … }` that
+        // looks like EOF rather than a configuration mistake.
+        // Per #632 CR round 1.
+        let buffer_size = if buffer_size == 0 {
+            DEFAULT_BUF_LENGTH as usize
+        } else {
+            buffer_size
+        };
         SampleIter {
             device: Some(self),
             buffer_size,
