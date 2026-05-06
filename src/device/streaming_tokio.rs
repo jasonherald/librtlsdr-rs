@@ -9,7 +9,7 @@
 //! `tokio::task::spawn_blocking` runs the underlying
 //! [`super::SampleIter`] loop on tokio's blocking-task thread
 //! pool, pushing each yielded buffer through a
-//! `tokio::sync::mpsc` channel. The returned [`SampleStream`]
+//! `tokio::sync::mpsc` channel. The returned [`TokioSampleStream`]
 //! drains the receiver as a `Stream`.
 //!
 //! Bounded channel (depth = [`STREAM_BACKPRESSURE_DEPTH`])
@@ -46,7 +46,7 @@ const STREAM_BACKPRESSURE_DEPTH: usize = 4;
 impl RtlSdrDevice {
     /// Stream IQ samples as a tokio-friendly async `Stream`.
     ///
-    /// Consumes the device. The returned [`SampleStream`] owns
+    /// Consumes the device. The returned [`TokioSampleStream`] owns
     /// the [`RtlSdrDevice`] inside a blocking task — there's no
     /// way to drive both the stream and other control methods
     /// concurrently against the same handle without giving up
@@ -106,7 +106,7 @@ impl RtlSdrDevice {
     ///
     /// # Drop semantics
     ///
-    /// When the consumer drops the [`SampleStream`], the worker
+    /// When the consumer drops the [`TokioSampleStream`], the worker
     /// observes the closed channel **between** USB reads and
     /// exits cleanly — typical drop latency is one read cadence
     /// (~65 ms at 2 Msps with the default 256 KB buffer). On a
@@ -153,7 +153,7 @@ impl RtlSdrDevice {
     pub fn stream_samples_tokio(
         self,
         buffer_size: usize,
-    ) -> Result<SampleStream, Box<(RtlSdrError, Self)>> {
+    ) -> Result<TokioSampleStream, Box<(RtlSdrError, Self)>> {
         // Preflight runtime check BEFORE consuming `self`'s
         // resources into the worker. `tokio::task::spawn_blocking`
         // doesn't document its outside-runtime behaviour but
@@ -177,7 +177,7 @@ impl RtlSdrDevice {
         // The blocking task owns the device for the duration
         // of the stream — no `Arc<Mutex<…>>`, no shared
         // mutable access. When the consumer drops the
-        // `SampleStream` the channel closes; we observe that
+        // `TokioSampleStream` the channel closes; we observe that
         // via `tx.is_closed()` between reads (so a healthy
         // streaming device exits within one buffer cadence)
         // and via `tx.blocking_send` returning `Err` after the
@@ -216,7 +216,7 @@ impl RtlSdrDevice {
             }
         });
 
-        Ok(SampleStream { rx })
+        Ok(TokioSampleStream { rx })
     }
 }
 
@@ -227,11 +227,11 @@ impl RtlSdrDevice {
 /// the other end terminates when this stream is dropped (next
 /// blocking-send fails). No additional cleanup is required
 /// from the consumer.
-pub struct SampleStream {
+pub struct TokioSampleStream {
     rx: tokio::sync::mpsc::Receiver<Result<Vec<u8>, RtlSdrError>>,
 }
 
-impl Stream for SampleStream {
+impl Stream for TokioSampleStream {
     type Item = Result<Vec<u8>, RtlSdrError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -244,7 +244,7 @@ mod tests {
     use super::*;
 
     // Pin the trait-impl + marker contract documented on
-    // `SampleStream`: it implements `Stream` (so consumers can
+    // `TokioSampleStream`: it implements `Stream` (so consumers can
     // use `StreamExt`) and is `Send` (so it can cross `await`
     // boundaries on multi-threaded executors). If a future
     // refactor changes the receiver type or adds non-`Send`
@@ -253,7 +253,7 @@ mod tests {
     const _: fn() = || {
         fn assert_stream<T: Stream>() {}
         fn assert_send<T: Send>() {}
-        assert_stream::<SampleStream>();
-        assert_send::<SampleStream>();
+        assert_stream::<TokioSampleStream>();
+        assert_send::<TokioSampleStream>();
     };
 }
