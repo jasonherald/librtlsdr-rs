@@ -119,7 +119,7 @@ impl RtlSdrDevice {
     /// reused caller-owned buffer.
     ///
     /// ```no_run
-    /// # use sdr_rtlsdr::{RtlSdrDevice, RtlSdrError};
+    /// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
     /// # fn main() -> Result<(), RtlSdrError> {
     /// let dev = RtlSdrDevice::open(0)?;
     /// dev.reset_buffer()?;

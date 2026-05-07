@@ -1,0 +1,25 @@
+librtlsdr-rs
+============
+
+This crate is a Rust port of librtlsdr, the C library for RTL2832U-based
+DVB-T dongles used as software-defined radio receivers.
+
+The original C library librtlsdr is licensed under the GNU General Public
+License version 2, or (at your option) any later version.
+
+  Copyright (C) 2012-2014 by Steve Markgraf <steve@steve-m.de>
+  Copyright (C) 2012      by Dimitri Stolnikov <horiz0n@gmx.net>
+  and contributors to the librtlsdr project
+  https://github.com/steve-m/librtlsdr (and forks, e.g. osmocom/rtl-sdr)
+
+The register addresses, magic constants, and per-tuner I2C tables in this
+crate are transcribed directly from the upstream C source. As such this
+work is a derivative of the original library and is distributed under the
+same GPL-2.0-or-later license.
+
+  Copyright (C) 2026 Jason Herald <jason.herald@gmail.com>
+  and contributors to the librtlsdr-rs project
+  https://github.com/jasonherald/librtlsdr-rs
+
+See the LICENSE file for the full text of the GNU General Public License,
+version 2.

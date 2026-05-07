@@ -48,10 +48,10 @@ impl RtlSdrReader {
     ///
     /// ```no_run
     /// # #[cfg(feature = "async-std")]
-    /// # async fn example() -> Result<(), sdr_rtlsdr::RtlSdrError> {
+    /// # async fn example() -> Result<(), librtlsdr_rs::RtlSdrError> {
     /// use futures_core::Stream;
     /// use std::pin::Pin;
-    /// use sdr_rtlsdr::RtlSdrDevice;
+    /// use librtlsdr_rs::RtlSdrDevice;
     ///
     /// let mut dev = RtlSdrDevice::open(0)?;
     /// dev.reset_buffer()?;

@@ -1,21 +1,35 @@
 [package]
-name = "sdr-rtlsdr"
+name = "librtlsdr-rs"
 version = "0.1.0"
-description = "Pure Rust port of librtlsdr — RTL2832U USB control and tuner drivers"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+description = "Pure-Rust port of librtlsdr — RTL2832U USB control + tuner drivers, no C library required."
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/jasonherald/librtlsdr-rs"
+homepage = "https://github.com/jasonherald/librtlsdr-rs"
+documentation = "https://docs.rs/librtlsdr-rs"
+readme = "README.md"
+keywords = ["sdr", "rtl-sdr", "rtl2832u", "rtlsdr", "radio"]
+categories = ["hardware-support", "science", "embedded"]
+
+# Files intentionally kept out of the published artifact: CI / dev-tool config,
+# the rust-toolchain pin (consumers should pick their own), and the in-tree
+# changelog (still useful in the GitHub repo, but not needed to compile).
+exclude = [
+    "/.github",
+    "/.gitignore",
+    "/deny.toml",
+    "/rust-toolchain.toml",
+]
 
 [dependencies]
-rusb.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
+rusb = "0.9"
+thiserror = "2"
+tracing = "0.1"
 
 # Async-runtime integrations are opt-in. Each runtime gets its
 # own feature flag so consumers pull in only what they use; the
 # Iterator-based sync streaming path needs no features at all.
-# Round 3a (this crate) adds `tokio`; round 3b will add `async-std`
-# and `smol` with the same shape. Per #626.
 futures-core = { version = "0.3", optional = true }
 tokio = { version = "1", default-features = false, features = ["sync", "rt"], optional = true }
 # `async-channel` provides a runtime-agnostic mpsc whose `Receiver`
@@ -31,16 +45,16 @@ blocking = { version = "1", optional = true }
 
 [features]
 default = []
-# Enables `RtlSdrDevice::stream_samples_tokio` — a `Stream` impl
+# Enables `RtlSdrReader::stream_samples_tokio` — a `Stream` impl
 # backed by `tokio::task::spawn_blocking` and `tokio::sync::mpsc`.
 # Pulls in `tokio` (sync + rt features only; no multi-thread
 # runtime dep) and `futures-core` for the `Stream` trait.
 tokio = ["dep:tokio", "dep:futures-core"]
-# Enables `RtlSdrDevice::stream_samples_async_std` — same shape
+# Enables `RtlSdrReader::stream_samples_async_std` — same shape
 # as the tokio variant but using `async_std::task::spawn_blocking`
 # and `async-channel` for the mpsc bridge.
 async-std = ["dep:async-std", "dep:async-channel", "dep:futures-core"]
-# Enables `RtlSdrDevice::stream_samples_smol` — same shape but
+# Enables `RtlSdrReader::stream_samples_smol` — same shape but
 # using `blocking::unblock` (smol's foundation for offloading
 # blocking work) and `async-channel`.
 smol = ["dep:blocking", "dep:async-channel", "dep:futures-core"]
@@ -56,15 +70,29 @@ tokio = { version = "1", features = ["macros", "time", "rt-multi-thread", "sync"
 # `futures-core` resolves to in the regular dep tree.
 futures-util = "0.3"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Allow common patterns that pedantic flags unnecessarily
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Flag unwrap/panic in library code
+unwrap_used = "warn"
+panic = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
 
 [package.metadata.docs.rs]
 # Build docs.rs's rendering with all runtime features enabled so
 # the per-runtime streaming methods all show up in the published
 # docs. Per-feature local builds (`cargo doc --features tokio`,
-# etc.) still work — cross-runtime references in module docs use
-# plain code spans (`super::streaming_tokio`) rather than
-# intra-doc links so they don't break when only one feature is
-# active.
+# etc.) still work.
 all-features = true

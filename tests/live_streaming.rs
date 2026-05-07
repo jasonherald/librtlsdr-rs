@@ -12,7 +12,7 @@
 //! default. Run explicitly with the dongle plugged in:
 //!
 //! ```text
-//! cargo test --features tokio -p sdr-rtlsdr --test live_streaming -- --ignored
+//! cargo test --features tokio --test live_streaming -- --ignored
 //! ```
 //!
 //! The tests cover the design-pivot validations from #626 round
@@ -21,17 +21,21 @@
 //! semantics work as documented.
 
 #![cfg(feature = "tokio")]
+// Integration tests legitimately use `panic!` for assertion-failure messaging
+// and reference identifiers without backticks in narrative doc comments;
+// these clippy lints fire on hot-path library code, not diagnostic test code.
+#![allow(clippy::panic, clippy::doc_markdown)]
 
 use std::time::Duration;
 
-use sdr_rtlsdr::RtlSdrDevice;
+use librtlsdr_rs::RtlSdrDevice;
 
 /// Helper: open device 0 and configure for FM broadcast tuning.
 /// Skips the test by returning `None` if no device is plugged
 /// in — keeps `--ignored` runs informative without a hard panic
 /// when the dongle is unplugged mid-suite.
 fn open_or_skip(test_name: &str) -> Option<RtlSdrDevice> {
-    if sdr_rtlsdr::get_device_count() == 0 {
+    if librtlsdr_rs::get_device_count() == 0 {
         eprintln!("[{test_name}] no RTL-SDR plugged in; skipping");
         return None;
     }

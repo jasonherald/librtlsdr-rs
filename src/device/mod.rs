@@ -456,7 +456,7 @@ impl RtlSdrDevice {
     /// known-tuners list.
     ///
     /// ```no_run
-    /// # use sdr_rtlsdr::{RtlSdrDevice, RtlSdrError};
+    /// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
     /// # fn main() -> Result<(), RtlSdrError> {
     /// let mut dev = RtlSdrDevice::open(0)?;
     /// dev.set_tuner_gain_mode(true)?;
