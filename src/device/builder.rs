@@ -28,7 +28,7 @@ impl Default for Selector {
 /// own code:
 ///
 /// ```no_run
-/// # use sdr_rtlsdr::{RtlSdrDevice, RtlSdrError};
+/// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
 /// # fn main() -> Result<(), RtlSdrError> {
 /// // Open by index (default — same as RtlSdrDevice::open(0)):
 /// let dev = RtlSdrDevice::builder().open()?;

@@ -8,7 +8,7 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use sdr_rtlsdr::{RtlSdrDevice, RtlSdrError};
+//! use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
 //!
 //! # fn main() -> Result<(), RtlSdrError> {
 //! // Open the first dongle plugged in.

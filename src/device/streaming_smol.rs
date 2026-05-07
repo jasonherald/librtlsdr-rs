@@ -5,17 +5,16 @@
 //! executor (smol, async-executor, async-global-executor) without
 //! blocking it.
 //!
-//! Mirrors the async-std variant (`super::streaming_async_std`)
-//! with one difference: the blocking offload uses
+//! Mirrors the tokio variant (`super::streaming_tokio`) but uses
 //! [`blocking::unblock`] (the foundation `smol::unblock` re-
-//! exports) rather than async-std's spawn_blocking. Same
-//! `async_channel` mpsc bridge, same back-pressure shape, same
-//! drop semantics (#633 tracks libusb-cancel).
+//! exports) for the offload and `async_channel` for the mpsc
+//! bridge instead of `tokio::sync::mpsc`. Same back-pressure
+//! shape, same drop semantics.
 //!
 //! [`blocking::unblock`] returns a [`blocking::Task`] which
 //! cancels its underlying work if dropped. We call `.detach()`
 //! so the worker runs to natural completion — matches the
-//! fire-and-forget shape of the tokio / async-std variants.
+//! fire-and-forget shape of the tokio variant.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -46,10 +45,10 @@ impl RtlSdrReader {
     ///
     /// ```no_run
     /// # #[cfg(feature = "smol")]
-    /// # async fn example() -> Result<(), sdr_rtlsdr::RtlSdrError> {
+    /// # async fn example() -> Result<(), librtlsdr_rs::RtlSdrError> {
     /// use futures_core::Stream;
     /// use std::pin::Pin;
-    /// use sdr_rtlsdr::RtlSdrDevice;
+    /// use librtlsdr_rs::RtlSdrDevice;
     ///
     /// let mut dev = RtlSdrDevice::open(0)?;
     /// dev.reset_buffer()?;

@@ -33,11 +33,6 @@ mod streaming_tokio;
 #[cfg(feature = "tokio")]
 pub use streaming_tokio::TokioSampleStream;
 
-#[cfg(feature = "async-std")]
-mod streaming_async_std;
-#[cfg(feature = "async-std")]
-pub use streaming_async_std::AsyncStdSampleStream;
-
 #[cfg(feature = "smol")]
 mod streaming_smol;
 #[cfg(feature = "smol")]
@@ -456,7 +451,7 @@ impl RtlSdrDevice {
     /// known-tuners list.
     ///
     /// ```no_run
-    /// # use sdr_rtlsdr::{RtlSdrDevice, RtlSdrError};
+    /// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
     /// # fn main() -> Result<(), RtlSdrError> {
     /// let mut dev = RtlSdrDevice::open(0)?;
     /// dev.set_tuner_gain_mode(true)?;

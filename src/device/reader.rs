@@ -25,7 +25,7 @@ use super::RtlSdrDevice;
 /// reader. The parent retains the [`RtlSdrDevice`] for control:
 ///
 /// ```no_run
-/// # use sdr_rtlsdr::{RtlSdrDevice, RtlSdrError};
+/// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
 /// # fn example() -> Result<(), RtlSdrError> {
 /// let mut device = RtlSdrDevice::open(0)?;
 /// device.set_sample_rate(2_400_000)?;
