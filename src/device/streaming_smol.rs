@@ -44,11 +44,22 @@ use super::reader::ReaderBusyGuard;
 // makes Receiver Unpin (unlikely without a major version bump).
 type BoxedReceiver = Pin<Box<async_channel::Receiver<Result<Vec<u8>, RtlSdrError>>>>;
 impl RtlSdrReader {
-    /// Stream IQ samples as a smol-friendly `Stream`.
+    /// Stream IQ samples as a `futures_core::Stream`.
     ///
-    /// Same shape as `Self::stream_samples_tokio` (only present
-    /// when the `tokio` feature is enabled). Differs only in
-    /// which runtime drives the blocking offload.
+    /// **Misnomer note (per audit pass-2 #57):** the `_smol`
+    /// suffix and `feature = "smol"` gate reflect dependency
+    /// choice (the [`blocking`] and [`async_channel`] crates are
+    /// in the smol family), NOT a runtime requirement. The worker
+    /// runs on `blocking`'s own internal thread pool independent
+    /// of any active executor — the returned `SmolSampleStream`
+    /// can be polled from any executor (smol, async-std, tokio,
+    /// `futures::executor::block_on`). The
+    /// `Self::stream_samples_tokio` companion, by contrast, *does*
+    /// require an active tokio runtime (it uses
+    /// `tokio::task::spawn_blocking`).
+    ///
+    /// Pick this method if you don't have a tokio runtime, or if
+    /// you want the channel + worker stack to be runtime-neutral.
     ///
     /// # Errors
     ///
@@ -57,9 +68,8 @@ impl RtlSdrReader {
     ///   tokio stream on the same device) is already in flight.
     ///   The unconsumed reader is returned to the caller so it can
     ///   be retried once the existing stream drops. Per #7.
-    /// - No runtime preflight errors today —
-    ///   [`blocking::unblock`] runs on its own internal thread pool
-    ///   independent of any active executor.
+    /// - No runtime preflight errors —
+    ///   [`blocking::unblock`] doesn't require an active executor.
     ///
     /// ```no_run
     /// # #[cfg(feature = "smol")]
@@ -76,6 +86,24 @@ impl RtlSdrReader {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Drop semantics
+    ///
+    /// Same shape as `Self::stream_samples_tokio`: between-reads
+    /// drops exit within one buffer cadence (~65 ms typical at
+    /// 2 Msps); a drop while a USB read is in flight waits up to
+    /// one read timeout (~5 s on a stalled device). True
+    /// in-flight cancellation needs libusb's async-submit + cancel
+    /// API and is tracked as #633.
+    ///
+    /// The smol-side detail: the worker is spawned via
+    /// [`blocking::unblock`] and `.detach()`-ed, so it runs to
+    /// natural completion on the `blocking` crate's internal
+    /// thread pool — it does NOT cancel when the
+    /// [`SmolSampleStream`] is dropped. Termination happens via
+    /// the `async_channel::Sender::send_blocking` failing on the
+    /// next iteration after the receiver is dropped (channel
+    /// closed). Per audit pass-2 #55.
     pub fn stream_samples_smol(
         self,
         buffer_size: usize,
@@ -101,6 +129,16 @@ impl RtlSdrReader {
         // Read loop calls `bulk_read` directly rather than
         // `iter_samples` to avoid the iterator's own re-acquire
         // path — we already hold the guard. Per #7.
+        //
+        // **Drop-detection mechanism (per audit pass-2 #61):**
+        // the load-bearing exit is `tx.send_blocking(...).is_err()`
+        // after the next read (channel closed when all receivers
+        // drop). The `tx.is_closed()` pre-read check is an
+        // *allocation-saving optimization* — when the consumer is
+        // already gone, it skips the `vec![0u8; buffer_size]` for
+        // the next chunk. Not load-bearing for exit; the
+        // post-read send-failure path is what guarantees
+        // termination.
         blocking::unblock(move || {
             let _guard = guard;
             let reader = self;
@@ -151,10 +189,33 @@ mod tests {
     const _: fn() = || {
         fn assert_stream<T: Stream>() {}
         fn assert_send<T: Send>() {}
+        fn assert_unpin<T: Unpin>() {}
         assert_stream::<SmolSampleStream>();
         assert_send::<SmolSampleStream>();
         // Item: Send pin — same rationale as the tokio sibling.
         // Per audit issue #20.
         assert_send::<<SmolSampleStream as Stream>::Item>();
+        // Pin `SmolSampleStream: Unpin` so consumers can use
+        // `stream.next().await` without `Box::pin(stream)` first.
+        // The Stream is Unpin only because its inner field is
+        // `Pin<Box<Receiver>>` (Box is always Unpin); if the
+        // file's `BoxedReceiver` indirection comment ever gets
+        // followed and the Receiver is embedded directly,
+        // `SmolSampleStream` would silently become `!Unpin` and
+        // this assertion would fire at compile time. Per audit
+        // pass-2 #60.
+        assert_unpin::<SmolSampleStream>();
     };
+
+    // Pin the `!Unpin` invariant on `async_channel::Receiver`
+    // that the file's `BoxedReceiver` rationale (lines 32-44)
+    // depends on. If a future async-channel release makes
+    // `Receiver: Unpin`, the `Pin<Box<Receiver>>` indirection
+    // becomes a needless allocation and this assertion fires —
+    // at which point the indirection can be dropped (per the
+    // `BoxedReceiver` comment's own pointer to revisit).
+    // Per audit pass-2 #58.
+    static_assertions::assert_not_impl_any!(
+        async_channel::Receiver<()>: Unpin
+    );
 }

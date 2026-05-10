@@ -5,6 +5,77 @@ All notable changes to `librtlsdr-rs` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-05-10
+
+Fourth wave of audit pass-2 follow-up — closes the seven async
+streaming parity findings ([#55] [#56] [#57] [#58] [#59] [#60]
+[#61]). Strict patch release: doc + test improvements, no
+behavior change.
+
+### Documentation
+
+- **`stream_samples_smol` clarified as runtime-agnostic**
+  ([#57]). Pre-#57 doc said it "differs only in which runtime
+  drives the blocking offload" from the tokio variant, implying
+  smol runtime gating that doesn't exist. `blocking::unblock`
+  runs on its own internal thread pool — the returned
+  `SmolSampleStream` can be polled from any executor (smol,
+  async-std, tokio, `futures::executor::block_on`). Updated
+  the doc to call this out explicitly.
+- **`stream_samples_smol` gained the "Drop semantics" doc
+  section** ([#55]) the tokio variant has had since 0.1.x.
+  Same up-to-5s mid-flight cancellation latency note + #633
+  pointer, plus a smol-specific note about
+  `blocking::unblock(...).detach()` semantics.
+- **`tx.is_closed()` clarified as alloc-save, not load-bearing
+  exit** ([#61]). The comments at `streaming_tokio.rs` and
+  `streaming_smol.rs` claimed `tx.is_closed()` was the primary
+  drop-detection mechanism. The real load-bearing exit is the
+  `(blocking_)send` failure after the next read; `is_closed()`
+  is an allocation-saving optimization that skips the next
+  buffer alloc. Updated both comments.
+
+### Tests
+
+- **`SmolSampleStream` and `TokioSampleStream` pin `Self: Unpin`**
+  ([#60]). Consumers can use `stream.next().await` without
+  `Box::pin(stream)` first today. The smol stream is Unpin
+  only because its inner `BoxedReceiver` is `Pin<Box<…>>` (Box
+  is always Unpin); a future field-shape change embedding the
+  Receiver directly would silently make the parent `!Unpin`.
+  `static_assertions` now fires at compile time instead.
+- **Pin the `!Unpin` invariant on `async_channel::Receiver`**
+  ([#58]) that the smol path's `BoxedReceiver` indirection
+  depends on. If a future async-channel release makes
+  `Receiver: Unpin`, the indirection becomes a needless
+  allocation and the assertion fires — at which point the
+  indirection can be dropped.
+- **`smol_dropping_stream_stops_worker` strengthened with
+  bounded re-open verification** ([#56]). Pre-#56 the test
+  sleeped 500ms after drop and asserted only that the smol
+  executor didn't deadlock. A worker that "exited" but failed
+  to release its inner Arc<DeviceHandle> would leak the USB
+  interface claim invisibly. Now drops the parent `dev`,
+  polls `RtlSdrDevice::open(0)` with bounded retry (6s
+  deadline) — mirror of the tokio sibling's #21 round-2
+  pattern.
+- **`tokio_stream_drop_while_blocking_send` gained the same
+  bounded re-open verification** ([#59]). Pre-#59 the test
+  sleeped 500ms in a 10s timeout and asserted only that the
+  test process didn't hang. A worker that returned from
+  `blocking_send` but didn't release its handle would still
+  let the test pass. Now follows the same drop-dev +
+  bounded-reopen shape as `smol_dropping_stream_stops_worker`
+  and `dropping_stream_stops_worker`.
+
+[#55]: https://github.com/jasonherald/librtlsdr-rs/issues/55
+[#56]: https://github.com/jasonherald/librtlsdr-rs/issues/56
+[#57]: https://github.com/jasonherald/librtlsdr-rs/issues/57
+[#58]: https://github.com/jasonherald/librtlsdr-rs/issues/58
+[#59]: https://github.com/jasonherald/librtlsdr-rs/issues/59
+[#60]: https://github.com/jasonherald/librtlsdr-rs/issues/60
+[#61]: https://github.com/jasonherald/librtlsdr-rs/issues/61
+
 ## [0.2.3] - 2026-05-10
 
 Third wave of audit pass-2 follow-up — closes the four
