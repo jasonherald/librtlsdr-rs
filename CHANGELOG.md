@@ -5,6 +5,72 @@ All notable changes to `librtlsdr-rs` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-10
+
+Second semver-major release. Closes the lone deferred audit
+finding ([#51]) — the companion to the `#[non_exhaustive]`
+`RtlSdrError` shipped in 0.2.0 / #16. Single-issue release
+(slated as the only Tier-3 / non-breaking-deferred item from
+audit pass 2) so the migration is small.
+
+### Migration guide
+
+**`Block` and `TunerType` are now `#[non_exhaustive]`.** Any
+exhaustive match on either enum needs a catch-all arm.
+
+```rust
+// 0.2.x — exhaustive match compiled cleanly
+use librtlsdr_rs::{Block, RtlSdrError};
+match err {
+    RtlSdrError::RegisterAccess { block, address } => match block {
+        Block::Demod => ...,
+        Block::Iic   => ...,
+        Block::Sys   => ...,
+        Block::Usb   => ...,
+        Block::Tuner => ...,
+        Block::Rom   => ...,
+        Block::Ir    => ...,
+    },
+    _ => ...,
+}
+
+// 0.3 — same shape, requires `_ => ...` catch-all arm
+use librtlsdr_rs::{Block, RtlSdrError};
+match err {
+    RtlSdrError::RegisterAccess { block, address } => match block {
+        Block::Demod => ...,
+        Block::Iic   => ...,
+        Block::Sys   => ...,
+        Block::Usb   => ...,
+        Block::Tuner => ...,
+        Block::Rom   => ...,
+        Block::Ir    => ...,
+        _            => ...,    // required since 0.3
+    },
+    _ => ...,
+}
+```
+
+Same shape for `TunerType` — per-tuner UI dispatch needs
+`_ => ...`.
+
+In exchange, future RTL-SDR variants with a new tuner IC
+(rare but historical: R828D was a later addition upstream) or
+a new register block ship as patch releases without forcing
+another semver-major migration.
+
+### Changed (breaking)
+
+- **`Block` is `#[non_exhaustive]`** ([#51]). `Block::Demod`,
+  `::Iic`, `::Sys`, `::Usb`, `::Tuner`, `::Rom`, `::Ir` are
+  unchanged; only the exhaustive-match contract changes.
+- **`TunerType` is `#[non_exhaustive]`** ([#51]). Variants
+  `Unknown`, `E4000`, `Fc0012`, `Fc0013`, `Fc2580`, `R820T`,
+  `R828D` are unchanged; only the exhaustive-match contract
+  changes.
+
+[#51]: https://github.com/jasonherald/librtlsdr-rs/issues/51
+
 ## [0.2.5] - 2026-05-10
 
 Fifth (and final non-breaking) wave of audit pass-2 follow-up
