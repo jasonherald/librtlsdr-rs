@@ -5,6 +5,105 @@ All notable changes to `librtlsdr-rs` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-05-10
+
+First semver-major release. Closes the deferred error-type bundle
+([#16]) — the only audit finding intentionally held back from the
+0.1.x patch wave because it required breaking changes. Two
+companion enums are now `#[non_exhaustive]` so future variant
+additions stay non-breaking.
+
+### Migration guide
+
+**1. `RtlSdrError::Tuner` now carries `TunerError`, not `String`.**
+
+```rust
+// 0.1.x
+match err {
+    RtlSdrError::Tuner(msg) if msg.contains("PLL not locked") => retry(),
+    RtlSdrError::Tuner(msg) => log::warn!("tuner: {msg}"),
+    _ => bail!(err),
+}
+
+// 0.2
+use librtlsdr_rs::{RtlSdrError, TunerError};
+match err {
+    RtlSdrError::Tuner(TunerError::PllNotLocked { freq_hz }) => retry(),
+    RtlSdrError::Tuner(inner) => log::warn!("tuner: {inner}"),
+    _ => bail!(err),
+}
+```
+
+**2. `RtlSdrError` and `TunerError` are `#[non_exhaustive]`.** Add
+a catch-all arm to any exhaustive match. Future variant additions
+ship as patch releases.
+
+```rust
+match err {
+    RtlSdrError::Usb(_) => ...,
+    RtlSdrError::DeviceLost => ...,
+    _ => ...,                     // required, even if all variants are listed
+}
+```
+
+**3. `DeviceNotFound`, `InvalidSampleRate`, `RegisterAccess` are
+struct variants now.**
+
+```rust
+// 0.1.x
+RtlSdrError::DeviceNotFound(idx)
+RtlSdrError::InvalidSampleRate(rate)
+RtlSdrError::RegisterAccess
+
+// 0.2
+RtlSdrError::DeviceNotFound { index: idx }
+RtlSdrError::InvalidSampleRate { rate_hz: rate }
+RtlSdrError::RegisterAccess { block, address }   // now also names the failing register
+```
+
+**4. `closest_gain` returns `Option<i32>`; `try_closest_gain` is
+removed.**
+
+```rust
+// 0.1.x — `0` was ambiguous between "no gain table" and "0 was the closest step"
+dev.set_tuner_gain(dev.closest_gain(150))?;
+
+// 0.2
+if let Some(g) = dev.closest_gain(150) {
+    dev.set_tuner_gain(g)?;
+}
+```
+
+### Changed (breaking)
+
+- **`RtlSdrError` is `#[non_exhaustive]`** ([#16]). Adds a
+  required catch-all arm to consumer matches; in exchange, future
+  additions ship as patch releases. Same treatment for the new
+  `TunerError`.
+- **`RtlSdrError::Tuner(String)` → `Tuner(TunerError)`** ([#16]).
+  New `TunerError` enum (`PllNotLocked { freq_hz }`,
+  `XtalIsZero`, `PllProgrammingFailed { backend, freq_hz, reason }`,
+  `I2cTransferFailed { operation, got, expected }`,
+  `ShadowCacheMiss { reg }`, `UnsupportedFilterBandwidth { mode }`,
+  `InvalidGain { what, detail }`, `Context { context, source }`)
+  lets consumers programmatically discriminate tuner failures
+  without parsing message strings. `#[from]` keeps `?` ergonomic
+  inside the crate.
+- **`RtlSdrError::DeviceNotFound(u32)` → `DeviceNotFound { index }`**
+  ([#16]) — struct variant for forward-compatibility with
+  diagnostic context fields.
+- **`RtlSdrError::InvalidSampleRate(u32)` → `InvalidSampleRate { rate_hz }`**
+  ([#16]) — struct variant.
+- **`RtlSdrError::RegisterAccess` (no payload) → `RegisterAccess { block, address }`**
+  ([#16]) — names the failing register block + address. The
+  `Block` enum (`Demod`, `Iic`, `Sys`, …) is re-exported at the
+  crate root.
+- **`RtlSdrDevice::closest_gain` returns `Option<i32>`** ([#16]).
+  Removes `try_closest_gain`; the two-method 0.1.x stopgap from
+  audit #15 collapses into one.
+
+[#16]: https://github.com/jasonherald/librtlsdr-rs/issues/16
+
 ## [0.1.2] - 2026-05-10
 
 Second wave of audit follow-up — closes Tier 3 through Tier 6

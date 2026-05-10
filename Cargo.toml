@@ -1,6 +1,6 @@
 [package]
 name = "librtlsdr-rs"
-version = "0.1.2"
+version = "0.2.0"
 description = "Pure-Rust port of librtlsdr — RTL2832U USB control + tuner drivers, no C library required."
 edition = "2024"
 rust-version = "1.95"
