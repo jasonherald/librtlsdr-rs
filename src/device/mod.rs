@@ -664,6 +664,7 @@ impl RtlSdrDevice {
     }
 
     /// Check if this is an RTL-SDR Blog V4 device.
+    #[must_use]
     pub fn is_blog_v4(&self) -> bool {
         self.manufact == "RTLSDRBlog" && self.product == "Blog V4"
     }
@@ -671,6 +672,7 @@ impl RtlSdrDevice {
     /// Check if the device matches a manufacturer/product pair.
     ///
     /// Ports `rtlsdr_check_dongle_model`.
+    #[must_use]
     pub fn check_dongle_model(&self, manufact: &str, product: &str) -> bool {
         self.manufact == manufact && self.product == product
     }

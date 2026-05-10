@@ -80,6 +80,7 @@ pub enum TunerType {
 
 impl TunerType {
     /// Get the gain table for this tuner type (in tenths of dB).
+    #[must_use]
     pub fn gains(&self) -> &'static [i32] {
         use crate::constants::*;
         match self {

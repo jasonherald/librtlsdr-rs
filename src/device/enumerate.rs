@@ -93,6 +93,7 @@ pub fn list_devices() -> Vec<DeviceInfo> {
 /// unreachable (libusb init failed, permission revoked, etc.) —
 /// the latter case is logged at `tracing::warn!` so the
 /// distinction isn't fully invisible. Per audit issue #18.
+#[must_use]
 pub fn get_device_count() -> u32 {
     let mut count = 0u32;
     match rusb::devices() {
@@ -118,6 +119,7 @@ pub fn get_device_count() -> u32 {
 /// when the index is out of range and when the USB subsystem is
 /// unreachable — same dual-meaning + tracing as
 /// [`get_device_count`]. Per audit issue #18.
+#[must_use]
 pub fn get_device_name(index: u32) -> String {
     let mut count = 0u32;
     match rusb::devices() {
