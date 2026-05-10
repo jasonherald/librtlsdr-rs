@@ -88,16 +88,25 @@ pub fn list_devices() -> Vec<DeviceInfo> {
 
 /// Get the number of connected RTL-SDR devices.
 ///
-/// Ports `rtlsdr_get_device_count`.
+/// Ports `rtlsdr_get_device_count`. Returns `0` both when no
+/// dongles are plugged in and when the USB subsystem itself is
+/// unreachable (libusb init failed, permission revoked, etc.) —
+/// the latter case is logged at `tracing::warn!` so the
+/// distinction isn't fully invisible. Per audit issue #18.
 pub fn get_device_count() -> u32 {
     let mut count = 0u32;
-    if let Ok(devices) = rusb::devices() {
-        for device in devices.iter() {
-            if let Ok(dd) = device.device_descriptor() {
-                if find_known_device(dd.vendor_id(), dd.product_id()).is_some() {
-                    count += 1;
+    match rusb::devices() {
+        Ok(devices) => {
+            for device in devices.iter() {
+                if let Ok(dd) = device.device_descriptor() {
+                    if find_known_device(dd.vendor_id(), dd.product_id()).is_some() {
+                        count += 1;
+                    }
                 }
             }
+        }
+        Err(e) => {
+            tracing::warn!("get_device_count: rusb::devices() failed ({e}); reporting 0 devices");
         }
     }
     count
@@ -105,19 +114,29 @@ pub fn get_device_count() -> u32 {
 
 /// Get the name of a device by index.
 ///
-/// Ports `rtlsdr_get_device_name`.
+/// Ports `rtlsdr_get_device_name`. Returns the empty string both
+/// when the index is out of range and when the USB subsystem is
+/// unreachable — same dual-meaning + tracing as
+/// [`get_device_count`]. Per audit issue #18.
 pub fn get_device_name(index: u32) -> String {
     let mut count = 0u32;
-    if let Ok(devices) = rusb::devices() {
-        for device in devices.iter() {
-            if let Ok(dd) = device.device_descriptor() {
-                if let Some(known) = find_known_device(dd.vendor_id(), dd.product_id()) {
-                    if count == index {
-                        return known.name.to_string();
+    match rusb::devices() {
+        Ok(devices) => {
+            for device in devices.iter() {
+                if let Ok(dd) = device.device_descriptor() {
+                    if let Some(known) = find_known_device(dd.vendor_id(), dd.product_id()) {
+                        if count == index {
+                            return known.name.to_string();
+                        }
+                        count += 1;
                     }
-                    count += 1;
                 }
             }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "get_device_name({index}): rusb::devices() failed ({e}); returning empty name"
+            );
         }
     }
     String::new()
