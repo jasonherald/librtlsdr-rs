@@ -51,6 +51,11 @@ impl RtlSdrReader {
     ///
     /// # Errors
     ///
+    /// On contention with an existing bulk-read activity, returns
+    /// [`RtlSdrError::DeviceBusy`] paired with the unconsumed
+    /// [`RtlSdrReader`] so the caller can retry once the active
+    /// stream drops. Per #7.
+    ///
     /// On preflight failure (no tokio runtime active) the
     /// returned `Err` carries both the diagnostic
     /// [`RtlSdrError`] and the unconsumed [`RtlSdrReader`] back

@@ -7,6 +7,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::RtlSdrError;
 
+// Brought into scope only so this file's intra-doc links
+// (`[`RtlSdrDevice::reader`]`, etc.) resolve under
+// `cargo doc -D warnings`. The type is not referenced by name in
+// any module-level code path here — clippy's `unused_imports` lint
+// flags this without the explicit allow. Per Code Rabbit on #23.
+#[allow(unused_imports)]
+use super::RtlSdrDevice;
+
 /// RAII guard for the per-device reader-busy flag. Acquiring sets
 /// the flag to `true` via `compare_exchange`; dropping clears it.
 ///
