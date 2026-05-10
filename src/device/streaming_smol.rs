@@ -86,6 +86,24 @@ impl RtlSdrReader {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Drop semantics
+    ///
+    /// Same shape as `Self::stream_samples_tokio`: between-reads
+    /// drops exit within one buffer cadence (~65 ms typical at
+    /// 2 Msps); a drop while a USB read is in flight waits up to
+    /// one read timeout (~5 s on a stalled device). True
+    /// in-flight cancellation needs libusb's async-submit + cancel
+    /// API and is tracked as #633.
+    ///
+    /// The smol-side detail: the worker is spawned via
+    /// [`blocking::unblock`] and `.detach()`-ed, so it runs to
+    /// natural completion on the `blocking` crate's internal
+    /// thread pool — it does NOT cancel when the
+    /// [`SmolSampleStream`] is dropped. Termination happens via
+    /// the `async_channel::Sender::send_blocking` failing on the
+    /// next iteration after the receiver is dropped (channel
+    /// closed). Per audit pass-2 #55.
     pub fn stream_samples_smol(
         self,
         buffer_size: usize,
