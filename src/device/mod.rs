@@ -277,45 +277,45 @@ impl RtlSdrDevice {
     /// Ports the tuner probing sequence from `rtlsdr_open`.
     fn probe_tuner(&mut self) {
         // Try E4000
-        if let Ok(reg) = usb::i2c_read_reg(&self.handle, E4K_I2C_ADDR, E4K_CHECK_ADDR) {
-            if reg == E4K_CHECK_VAL {
-                tracing::info!("Found Elonics E4000 tuner");
-                self.tuner_type = TunerType::E4000;
-                return;
-            }
+        if let Ok(reg) = usb::i2c_read_reg(&self.handle, E4K_I2C_ADDR, E4K_CHECK_ADDR)
+            && reg == E4K_CHECK_VAL
+        {
+            tracing::info!("Found Elonics E4000 tuner");
+            self.tuner_type = TunerType::E4000;
+            return;
         }
 
         // Try FC0013
-        if let Ok(reg) = usb::i2c_read_reg(&self.handle, FC0013_I2C_ADDR, FC0013_CHECK_ADDR) {
-            if reg == FC0013_CHECK_VAL {
-                tracing::info!("Found Fitipower FC0013 tuner");
-                self.tuner_type = TunerType::Fc0013;
-                return;
-            }
+        if let Ok(reg) = usb::i2c_read_reg(&self.handle, FC0013_I2C_ADDR, FC0013_CHECK_ADDR)
+            && reg == FC0013_CHECK_VAL
+        {
+            tracing::info!("Found Fitipower FC0013 tuner");
+            self.tuner_type = TunerType::Fc0013;
+            return;
         }
 
         // Try R820T
-        if let Ok(reg) = usb::i2c_read_reg(&self.handle, R820T_I2C_ADDR, R82XX_CHECK_ADDR) {
-            if reg == R82XX_CHECK_VAL {
-                tracing::info!("Found Rafael Micro R820T tuner");
-                self.tuner_type = TunerType::R820T;
-                self.create_r82xx_tuner();
-                return;
-            }
+        if let Ok(reg) = usb::i2c_read_reg(&self.handle, R820T_I2C_ADDR, R82XX_CHECK_ADDR)
+            && reg == R82XX_CHECK_VAL
+        {
+            tracing::info!("Found Rafael Micro R820T tuner");
+            self.tuner_type = TunerType::R820T;
+            self.create_r82xx_tuner();
+            return;
         }
 
         // Try R828D
-        if let Ok(reg) = usb::i2c_read_reg(&self.handle, R828D_I2C_ADDR, R82XX_CHECK_ADDR) {
-            if reg == R82XX_CHECK_VAL {
-                tracing::info!("Found Rafael Micro R828D tuner");
-                let is_v4 = self.is_blog_v4();
-                if is_v4 {
-                    tracing::info!("RTL-SDR Blog V4 Detected");
-                }
-                self.tuner_type = TunerType::R828D;
-                self.create_r82xx_tuner();
-                return;
+        if let Ok(reg) = usb::i2c_read_reg(&self.handle, R828D_I2C_ADDR, R82XX_CHECK_ADDR)
+            && reg == R82XX_CHECK_VAL
+        {
+            tracing::info!("Found Rafael Micro R828D tuner");
+            let is_v4 = self.is_blog_v4();
+            if is_v4 {
+                tracing::info!("RTL-SDR Blog V4 Detected");
             }
+            self.tuner_type = TunerType::R828D;
+            self.create_r82xx_tuner();
+            return;
         }
 
         // Initialize GPIOs before probing remaining tuners
@@ -325,22 +325,22 @@ impl RtlSdrDevice {
         let _ = usb::set_gpio_bit(&self.handle, 4, false);
 
         // Try FC2580
-        if let Ok(reg) = usb::i2c_read_reg(&self.handle, FC2580_I2C_ADDR, FC2580_CHECK_ADDR) {
-            if (reg & 0x7f) == FC2580_CHECK_VAL {
-                tracing::info!("Found FCI 2580 tuner");
-                self.tuner_type = TunerType::Fc2580;
-                return;
-            }
+        if let Ok(reg) = usb::i2c_read_reg(&self.handle, FC2580_I2C_ADDR, FC2580_CHECK_ADDR)
+            && (reg & 0x7f) == FC2580_CHECK_VAL
+        {
+            tracing::info!("Found FCI 2580 tuner");
+            self.tuner_type = TunerType::Fc2580;
+            return;
         }
 
         // Try FC0012
-        if let Ok(reg) = usb::i2c_read_reg(&self.handle, FC0012_I2C_ADDR, FC0012_CHECK_ADDR) {
-            if reg == FC0012_CHECK_VAL {
-                tracing::info!("Found Fitipower FC0012 tuner");
-                let _ = usb::set_gpio_output(&self.handle, 6);
-                self.tuner_type = TunerType::Fc0012;
-                return;
-            }
+        if let Ok(reg) = usb::i2c_read_reg(&self.handle, FC0012_I2C_ADDR, FC0012_CHECK_ADDR)
+            && reg == FC0012_CHECK_VAL
+        {
+            tracing::info!("Found Fitipower FC0012 tuner");
+            let _ = usb::set_gpio_output(&self.handle, 6);
+            self.tuner_type = TunerType::Fc0012;
+            return;
         }
 
         tracing::warn!("No supported tuner found");
@@ -428,12 +428,19 @@ impl RtlSdrDevice {
     // --- Public getters ---
 
     /// Get the tuner type.
+    #[must_use]
     pub fn tuner_type(&self) -> TunerType {
         self.tuner_type
     }
 
     /// Get available gain values (tenths of dB).
-    pub fn tuner_gains(&self) -> &[i32] {
+    ///
+    /// Returns a `'static` slice (the tables in
+    /// [`TunerType::gains`] are static const data) — callers can
+    /// stash the slice across the device's lifetime without a
+    /// reborrow. Per audit issue #19.
+    #[must_use]
+    pub fn tuner_gains(&self) -> &'static [i32] {
         self.tuner_type.gains()
     }
 
@@ -457,6 +464,11 @@ impl RtlSdrDevice {
     /// at all — in practice only the `Unknown` tuner type, which
     /// means the device hasn't been probed or the IC isn't in our
     /// known-tuners list.
+    ///
+    /// **Manual gain mode must be enabled** for `set_tuner_gain` to
+    /// take effect (the example calls `set_tuner_gain_mode(true)`
+    /// first). In AGC mode the tuner picks its own gain and ignores
+    /// the value you set. Per audit issue #19.
     ///
     /// ```no_run
     /// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
@@ -507,46 +519,55 @@ impl RtlSdrDevice {
     }
 
     /// Get device manufacturer string.
+    #[must_use]
     pub fn manufacturer(&self) -> &str {
         &self.manufact
     }
 
     /// Get device product string.
+    #[must_use]
     pub fn product(&self) -> &str {
         &self.product
     }
 
     /// Get device serial string.
+    #[must_use]
     pub fn serial(&self) -> &str {
         &self.serial
     }
 
     /// Get the current center frequency.
+    #[must_use]
     pub fn center_freq(&self) -> u32 {
         self.freq
     }
 
     /// Get the current sample rate.
+    #[must_use]
     pub fn sample_rate(&self) -> u32 {
         self.rate
     }
 
     /// Get the current frequency correction in PPM.
+    #[must_use]
     pub fn freq_correction(&self) -> i32 {
         self.corr
     }
 
     /// Get the current tuner gain.
+    #[must_use]
     pub fn tuner_gain(&self) -> i32 {
         self.gain
     }
 
     /// Get the current direct sampling mode.
+    #[must_use]
     pub fn direct_sampling(&self) -> i32 {
         self.direct_sampling
     }
 
     /// Get the current offset tuning state.
+    #[must_use]
     pub fn offset_tuning(&self) -> bool {
         self.offs_freq > 0
     }
@@ -554,6 +575,7 @@ impl RtlSdrDevice {
     /// Get corrected xtal frequencies.
     ///
     /// Ports `rtlsdr_get_xtal_freq`.
+    #[must_use]
     pub fn xtal_freq(&self) -> (u32, u32) {
         (self.get_rtl_xtal(), self.get_tuner_xtal())
     }
@@ -706,6 +728,49 @@ const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<RtlSdrDevice>();
 };
+
+/// Manual [`Debug`] impl for [`RtlSdrDevice`] — `#[derive(Debug)]`
+/// can't be used because two fields don't implement `Debug`:
+///
+/// - `handle: Arc<rusb::DeviceHandle<...>>` — `rusb::DeviceHandle`
+///   has no `Debug` impl. Substituted with the `Arc`'s pointer
+///   address as a stable identifier.
+/// - `tuner: Option<Box<dyn Tuner>>` — the `Tuner` trait
+///   (`pub(crate)`) doesn't require `Debug` as a supertrait
+///   (would force all 5 backends to derive it on their large
+///   register arrays for marginal benefit). Substituted with the
+///   tuner-presence boolean alongside the explicit `tuner_type`
+///   field, which already names the backend.
+///
+/// Per audit issue #19: gives consumers `dbg!(&device)` and
+/// `#[derive(Debug)]` on parent structs without leaking the
+/// internal trait shape.
+impl std::fmt::Debug for RtlSdrDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RtlSdrDevice")
+            .field("handle_ptr", &std::sync::Arc::as_ptr(&self.handle))
+            .field("reader_busy", &self.reader_busy)
+            .field("tuner_type", &self.tuner_type)
+            .field("tuner_present", &self.tuner.is_some())
+            .field("rtl_xtal", &self.rtl_xtal)
+            .field("tun_xtal", &self.tun_xtal)
+            .field("rate", &self.rate)
+            .field("freq", &self.freq)
+            .field("bw", &self.bw)
+            .field("offs_freq", &self.offs_freq)
+            .field("corr", &self.corr)
+            .field("gain", &self.gain)
+            .field("direct_sampling", &self.direct_sampling)
+            .field("fir", &self.fir)
+            .field("async_status", &self.async_status)
+            .field("manufact", &self.manufact)
+            .field("product", &self.product)
+            .field("serial", &self.serial)
+            .field("dev_lost", &self.dev_lost)
+            .field("driver_active", &self.driver_active)
+            .finish()
+    }
+}
 
 #[cfg(test)]
 mod tests {

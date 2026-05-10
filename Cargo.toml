@@ -9,7 +9,7 @@ repository = "https://github.com/jasonherald/librtlsdr-rs"
 homepage = "https://github.com/jasonherald/librtlsdr-rs"
 documentation = "https://docs.rs/librtlsdr-rs"
 readme = "README.md"
-keywords = ["sdr", "rtl-sdr", "rtl2832u", "rtlsdr", "radio"]
+keywords = ["sdr", "rtl-sdr", "rtlsdr", "radio", "iq"]
 categories = ["hardware-support", "science", "embedded"]
 
 # Files intentionally kept out of the published artifact: CI / dev-tool config,
@@ -73,6 +73,11 @@ futures-util = "0.3"
 # `async-channel` — pulling in the umbrella `smol` crate is a
 # dev-only dep that does not bleed into consumers.
 smol = "2"
+# `static_assertions::assert_not_impl_any!` for the negative
+# `!Send` contract pin on `SampleIter`. Tiny no-runtime-cost
+# crate — its macros expand to const-eval helpers that just
+# fail to compile on contract violation. Per audit #20.
+static_assertions = "1"
 
 [lints.rust]
 unsafe_code = "deny"

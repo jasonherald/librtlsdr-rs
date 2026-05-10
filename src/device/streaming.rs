@@ -166,9 +166,12 @@ impl RtlSdrDevice {
     ///
     /// Each yielded `Vec<u8>` is a fresh allocation. At the
     /// 256 KB / 65 ms cadence of typical RTL-SDR rates this is
-    /// negligible (~15 allocs/sec), but for tight loops or
-    /// embedded use prefer [`Self::read_sync`] directly with a
-    /// reused caller-owned buffer.
+    /// negligible (~15 allocs/sec). Smaller buffers scale
+    /// linearly: a 4 KB buffer at 2 Msps is ~1000 allocs/sec
+    /// (still acceptable on desktop), but at 512 bytes you're at
+    /// ~7800 allocs/sec and an arena/pool starts to matter.
+    /// For tight loops or embedded use prefer [`Self::read_sync`]
+    /// directly with a reused caller-owned buffer. Per #20.
     ///
     /// ```no_run
     /// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
@@ -238,6 +241,17 @@ impl RtlSdrDevice {
     ///   device that the C upstream would loop on forever.
     ///   Brings this path into rough parity with `iter_samples`'s
     ///   defensive `Ok(0)` fuse. Per audit issue #12.
+    ///
+    /// # Cancellation latency
+    ///
+    /// The cancel flag is checked between bulk reads. Each bulk
+    /// read uses a 1-second timeout (the polling cadence), so
+    /// worst-case observation latency from
+    /// `cancel_flag.store(true, …)` to the function returning is
+    /// ~1 second on an idle device, plus up to one bulk-read time
+    /// (~65 ms typical at 2 Msps) on an actively-streaming device.
+    /// True in-flight cancellation needs libusb's async-submit +
+    /// cancel API and is tracked as #633. Per audit #20.
     pub fn read_async_blocking(
         &self,
         mut cb: ReadAsyncCb,
@@ -262,6 +276,12 @@ impl RtlSdrDevice {
         let mut buf = vec![0u8; actual_buf_len];
         let mut consecutive_zero_reads: u32 = 0;
 
+        // Relaxed ordering is sufficient: there's no other state
+        // being synchronized through this flag — the worst-case
+        // visibility latency is one extra bulk-read iteration
+        // (one ASYNC_POLL_TIMEOUT). Don't "upgrade" to SeqCst on
+        // a hot loop without a concrete invariant requiring it.
+        // Per audit issue #20.
         while !cancel_flag.load(Ordering::Relaxed) {
             match self
                 .handle
@@ -390,4 +410,16 @@ mod tests {
         assert_iter::<SampleIter<'_>>();
         assert_fused::<SampleIter<'_>>();
     };
+
+    // Pin `SampleIter: !Send` — the borrowed iterator is the
+    // single-thread surface (the owned `ReaderIter` is the
+    // sendable one). `SampleIter<'a>` borrows `&'a RtlSdrDevice`
+    // and `RtlSdrDevice: !Sync`, so `&RtlSdrDevice: !Send`,
+    // making `SampleIter: !Send` transitively. If a future field
+    // change ever made `RtlSdrDevice: Sync`, `SampleIter` would
+    // silently become Sendable — and a downstream consumer might
+    // inadvertently move it across threads, violating the
+    // documented "single-threaded sync iteration" contract.
+    // Per audit issue #20.
+    static_assertions::assert_not_impl_any!(SampleIter<'static>: Send);
 }

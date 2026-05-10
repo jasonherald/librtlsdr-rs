@@ -29,8 +29,20 @@ use crate::constants::STREAM_BACKPRESSURE_DEPTH;
 use super::RtlSdrReader;
 use super::reader::ReaderBusyGuard;
 
+// Audit issue #20 suggested dropping `Pin<Box<Receiver>>` in
+// favor of storing `async_channel::Receiver` directly and pinning
+// it on each poll via `Pin::new(&mut self.rx)`. **That doesn't
+// work with current `async-channel` (2.5.0):** the receiver is
+// implemented via `pin_project!` and is `!Unpin` (the inner
+// `event-listener` machinery requires pinning). `Pin::new`
+// requires the pointee to be `Unpin`, so the suggested
+// simplification doesn't compile.
+//
+// `Box<T>: Unpin` always (regardless of `T`), so the original
+// `Pin<Box<Receiver>>` shape sidesteps the `!Unpin` Receiver via
+// the Box's own Unpin. Keep it. Revisit if `async-channel` ever
+// makes Receiver Unpin (unlikely without a major version bump).
 type BoxedReceiver = Pin<Box<async_channel::Receiver<Result<Vec<u8>, RtlSdrError>>>>;
-
 impl RtlSdrReader {
     /// Stream IQ samples as a smol-friendly `Stream`.
     ///
@@ -141,5 +153,8 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_stream::<SmolSampleStream>();
         assert_send::<SmolSampleStream>();
+        // Item: Send pin — same rationale as the tokio sibling.
+        // Per audit issue #20.
+        assert_send::<<SmolSampleStream as Stream>::Item>();
     };
 }
