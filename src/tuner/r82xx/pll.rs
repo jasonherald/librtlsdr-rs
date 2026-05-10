@@ -2,7 +2,7 @@
 //!
 //! Exact port of `r82xx_set_pll` from tuner_r82xx.c.
 
-use crate::error::RtlSdrError;
+use crate::error::{RtlSdrError, TunerError};
 
 use super::R82xxPriv;
 use super::constants::{R82xxChip, REG_SHADOW_START};
@@ -30,9 +30,7 @@ impl R82xxPriv {
         // explicitly with a typed error rather than letting it
         // panic. Per audit slice D / #11.
         if pll_ref == 0 {
-            return Err(RtlSdrError::Tuner(
-                "PLL reference (xtal) is zero".to_string(),
-            ));
+            return Err(TunerError::XtalIsZero.into());
         }
 
         let vco_min: u32 = 1_770_000; // kHz
@@ -71,9 +69,12 @@ impl R82xxPriv {
 
         // Check that we found a valid divider
         if mix_div > 64 {
-            return Err(RtlSdrError::Tuner(format!(
-                "no valid VCO divider for {freq} Hz"
-            )));
+            return Err(TunerError::PllProgrammingFailed {
+                backend: "R82xx",
+                freq_hz: freq,
+                reason: "no valid VCO divider",
+            }
+            .into());
         }
 
         // Read back and check VCO fine tune
@@ -105,9 +106,12 @@ impl R82xxPriv {
         let sdm = (vco_div % 65536) as u32;
 
         if nint < 13 || nint > ((128 / u32::from(vco_power_ref)) - 1) {
-            return Err(RtlSdrError::Tuner(format!(
-                "no valid PLL values for {freq} Hz (nint={nint})"
-            )));
+            return Err(TunerError::PllProgrammingFailed {
+                backend: "R82xx",
+                freq_hz: freq,
+                reason: "PLL nint out of range",
+            }
+            .into());
         }
 
         let ni = ((nint - 13) / 4) as u8;
@@ -148,7 +152,7 @@ impl R82xxPriv {
             // typed error path is the only outcome — matches the
             // sibling tuners (E4K returns Err on lock failure).
             // Per audit slice D I-5 / #11.
-            return Err(RtlSdrError::Tuner(format!("PLL not locked for {freq} Hz")));
+            return Err(TunerError::PllNotLocked { freq_hz: freq }.into());
         }
 
         // Set PLL autotune = 8kHz

@@ -13,7 +13,7 @@ pub mod constants;
 mod i2c;
 mod pll;
 
-use crate::error::RtlSdrError;
+use crate::error::{RtlSdrError, TunerError};
 use crate::tuner::Tuner;
 
 use constants::*;
@@ -222,17 +222,24 @@ impl R82xxPriv {
             self.write_reg_mask(handle, 0x10, 0x00, 0x03)?;
 
             // Add "filter calibration" context to the inner Err
-            // ONLY for `RtlSdrError::Tuner(...)` (which carries a
-            // String we can prefix). Pass `Usb`, `DeviceLost`, etc.
+            // ONLY for `RtlSdrError::Tuner(...)` (now wrapping
+            // `TunerError`). Pass `Usb`, `DeviceLost`, etc.
             // through unchanged so consumers matching on transport
             // variants (e.g. `Err(Usb(NoDevice))` to detect
-            // disconnect) keep typed handling. Per #11 round 2
-            // (Code Rabbit).
+            // disconnect) keep typed handling.
+            //
+            // The `TunerError::Context` variant boxes the inner
+            // typed error so consumers can still walk via
+            // `std::error::Error::source` to discriminate
+            // PLL-not-locked-during-calibration from other
+            // calibration failures. Per #11 round 2 (Code Rabbit)
+            // + #16 (typed TunerError).
             self.set_pll(handle, filt_cal_lo * 1000)
                 .map_err(|e| match e {
-                    RtlSdrError::Tuner(msg) => {
-                        RtlSdrError::Tuner(format!("filter calibration: {msg}"))
-                    }
+                    RtlSdrError::Tuner(inner) => RtlSdrError::Tuner(TunerError::Context {
+                        context: "filter calibration",
+                        source: Box::new(inner),
+                    }),
                     other => other,
                 })?;
 

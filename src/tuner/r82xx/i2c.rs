@@ -3,7 +3,7 @@
 //! Exact port of the shadow_store, shadow_equal, r82xx_write,
 //! r82xx_read, and r82xx_write_reg_mask functions.
 
-use crate::error::RtlSdrError;
+use crate::error::{RtlSdrError, TunerError};
 use crate::usb;
 
 use super::R82xxPriv;
@@ -78,10 +78,12 @@ impl R82xxPriv {
 
             let rc = usb::i2c_write(handle, self.i2c_addr, &self.buf[..size + 1])?;
             if rc != size + 1 {
-                return Err(RtlSdrError::Tuner(format!(
-                    "i2c write failed: wrote {rc}, expected {}",
-                    size + 1
-                )));
+                return Err(TunerError::I2cTransferFailed {
+                    operation: "write",
+                    got: rc,
+                    expected: size + 1,
+                }
+                .into());
             }
 
             current_reg += size as u8;
@@ -131,7 +133,7 @@ impl R82xxPriv {
     ) -> Result<(), RtlSdrError> {
         let cached = self
             .read_cache_reg(reg)
-            .ok_or_else(|| RtlSdrError::Tuner(format!("no cached value for reg 0x{reg:02x}")))?;
+            .ok_or(TunerError::ShadowCacheMiss { reg })?;
 
         let new_val = (cached & !bit_mask) | (val & bit_mask);
         self.write(handle, reg, &[new_val])
@@ -150,18 +152,23 @@ impl R82xxPriv {
         self.buf[0] = reg;
         let rc = usb::i2c_write(handle, self.i2c_addr, &self.buf[..1])?;
         if rc != 1 {
-            return Err(RtlSdrError::Tuner(format!(
-                "i2c read addr write failed: {rc}"
-            )));
+            return Err(TunerError::I2cTransferFailed {
+                operation: "read addr",
+                got: rc,
+                expected: 1,
+            }
+            .into());
         }
 
         // Read data
         let rc = usb::i2c_read(handle, self.i2c_addr, &mut self.buf[1..1 + out.len()])?;
         if rc != out.len() {
-            return Err(RtlSdrError::Tuner(format!(
-                "i2c read data failed: got {rc}, expected {}",
-                out.len()
-            )));
+            return Err(TunerError::I2cTransferFailed {
+                operation: "read data",
+                got: rc,
+                expected: out.len(),
+            }
+            .into());
         }
 
         // Bit-reverse the data

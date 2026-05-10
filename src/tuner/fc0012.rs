@@ -6,7 +6,7 @@
 //! - Copyright (C) 2012 Hans-Frieder Vogt <hfvogt@gmx.net>
 //! - Copyright (C) 2012 Steve Markgraf <steve@steve-m.de> (librtlsdr modifications)
 
-use crate::error::RtlSdrError;
+use crate::error::{RtlSdrError, TunerError};
 use crate::tuner::Tuner;
 use crate::usb;
 
@@ -395,9 +395,12 @@ impl Fc0012Tuner {
             // glitch producing a malformed xdiv shouldn't silently
             // produce wrong PLL programming. Per audit #14.
             if pm == 0 {
-                return Err(RtlSdrError::Tuner(format!(
-                    "FC0012: PLL inputs out of range (xdiv={xdiv}) for {freq} Hz"
-                )));
+                return Err(TunerError::PllProgrammingFailed {
+                    backend: "FC0012",
+                    freq_hz: freq,
+                    reason: "PLL inputs out of range (xdiv too small)",
+                }
+                .into());
             }
             am += 8;
             pm -= 1;
@@ -410,9 +413,12 @@ impl Fc0012Tuner {
         };
 
         if reg1 > PLL_REG1_MAX || reg2 < PLL_REG2_MIN {
-            return Err(RtlSdrError::Tuner(format!(
-                "FC0012: no valid PLL combination found for {freq} Hz"
-            )));
+            return Err(TunerError::PllProgrammingFailed {
+                backend: "FC0012",
+                freq_hz: freq,
+                reason: "no valid PLL combination",
+            }
+            .into());
         }
 
         // Fix clock out
