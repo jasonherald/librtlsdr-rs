@@ -44,7 +44,7 @@ impl RtlSdrDevice {
             if r != cmd.len() {
                 return Err(RtlSdrError::RegisterAccess {
                     block: Block::Iic,
-                    address: u16::from(EEPROM_ADDR),
+                    address: u16::from(addr_byte),
                 });
             }
 
