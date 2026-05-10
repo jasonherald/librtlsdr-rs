@@ -22,7 +22,7 @@ impl RtlSdrDevice {
             || (samp_rate > 3_200_000)
             || (samp_rate > 300_000 && samp_rate <= 900_000)
         {
-            return Err(RtlSdrError::InvalidSampleRate(samp_rate));
+            return Err(RtlSdrError::InvalidSampleRate { rate_hz: samp_rate });
         }
 
         let rsamp_ratio =

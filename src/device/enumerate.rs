@@ -206,7 +206,7 @@ pub(crate) fn find_device_by_index(
         }
     }
 
-    Err(RtlSdrError::DeviceNotFound(index))
+    Err(RtlSdrError::DeviceNotFound { index })
 }
 
 #[cfg(test)]

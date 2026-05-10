@@ -6,15 +6,21 @@
 /// common consumer patterns of stashing the last error in an
 /// `Arc<Mutex<Option<RtlSdrError>>>`, snapshotting it across UI
 /// re-renders, or asserting equality in tests. Per #15.
+///
+/// `#[non_exhaustive]` so adding a new variant in a future patch
+/// release is non-breaking. Consumers should always include a
+/// catch-all `_ => ...` arm in exhaustive match. Per #16 / 0.2.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RtlSdrError {
     /// USB communication error.
     #[error("USB error: {0}")]
     Usb(#[from] rusb::Error),
 
-    /// Device not found at the specified index.
-    #[error("device not found at index {0}")]
-    DeviceNotFound(u32),
+    /// Device not found at the specified index. **Struct variant
+    /// since 0.2** — was `DeviceNotFound(u32)` in 0.1.x.
+    #[error("device not found at index {index}")]
+    DeviceNotFound { index: u32 },
 
     /// No supported tuner detected on the device.
     #[error("no supported tuner found")]
@@ -24,15 +30,18 @@ pub enum RtlSdrError {
     #[error("tuner error: {0}")]
     Tuner(String),
 
-    /// Invalid sample rate.
-    #[error("invalid sample rate: {0} Hz")]
-    InvalidSampleRate(u32),
+    /// Invalid sample rate. **Struct variant since 0.2** — was
+    /// `InvalidSampleRate(u32)` in 0.1.x.
+    #[error("invalid sample rate: {rate_hz} Hz")]
+    InvalidSampleRate { rate_hz: u32 },
 
     /// Invalid parameter.
     #[error("invalid parameter: {0}")]
     InvalidParameter(String),
 
-    /// Device is busy (async read in progress).
+    /// Device is busy (another bulk-read activity is already in
+    /// flight on this device — see `RtlSdrReader`'s busy-flag
+    /// guard added in 0.1.1 / #7).
     #[error("device busy")]
     DeviceBusy,
 
@@ -107,7 +116,7 @@ mod tests {
         assert!(!RtlSdrError::DeviceBusy.is_disconnected());
         assert!(!RtlSdrError::Usb(rusb::Error::Timeout).is_disconnected());
         assert!(!RtlSdrError::NoTuner.is_disconnected());
-        assert!(!RtlSdrError::DeviceNotFound(0).is_disconnected());
+        assert!(!RtlSdrError::DeviceNotFound { index: 0 }.is_disconnected());
         assert!(!RtlSdrError::Tuner("anything".to_string()).is_disconnected());
     }
 
