@@ -181,13 +181,32 @@ impl RtlSdrError {
     /// assert!(e.is_disconnected());
     /// ```
     ///
-    /// Recognises both [`RtlSdrError::DeviceLost`] (the crate's
+    /// Recognises [`RtlSdrError::DeviceLost`] (the crate's
     /// internal "we observed disconnect" sentinel — see `read_sync`
-    /// and friends) and the underlying [`rusb::Error::NoDevice`]
-    /// case for paths that haven't translated yet. Per #15.
+    /// and friends) plus the underlying rusb variants that
+    /// commonly surface a yanked dongle:
+    /// - [`rusb::Error::NoDevice`] — libusb's authoritative
+    ///   disconnect signal, fires on the next call after the
+    ///   kernel observes the unplug
+    /// - [`rusb::Error::Pipe`] — endpoint stall; on Linux this
+    ///   commonly surfaces from a mid-flight bulk read at the
+    ///   moment the device disappears, before libusb downgrades
+    ///   subsequent calls to `NoDevice`
+    /// - [`rusb::Error::Io`] — generic transport I/O failure;
+    ///   same Linux mid-flight-disconnect surrogate
+    ///
+    /// Pre-#43 (0.2.0 and earlier) only matched `DeviceLost` and
+    /// `NoDevice`, so a reconnect loop using `is_disconnected`
+    /// to gate the retry path mistreated `Pipe`/`Io` from a
+    /// hot-unplug as transient and waited a full bulk-read cycle
+    /// before getting an actionable signal. Per audit pass-2 #43.
     #[must_use]
     pub fn is_disconnected(&self) -> bool {
-        matches!(self, Self::DeviceLost | Self::Usb(rusb::Error::NoDevice))
+        matches!(
+            self,
+            Self::DeviceLost
+                | Self::Usb(rusb::Error::NoDevice | rusb::Error::Pipe | rusb::Error::Io)
+        )
     }
 
     /// Returns `true` if the error is a transient transport
@@ -224,6 +243,17 @@ mod tests {
         assert!(RtlSdrError::Usb(rusb::Error::NoDevice).is_disconnected());
     }
 
+    /// Per audit pass-2 #43: Linux hot-unplug commonly surfaces
+    /// `Pipe` / `Io` from a mid-flight bulk read before libusb
+    /// downgrades to `NoDevice`. A reconnect-loop consumer using
+    /// `is_disconnected` should treat both as disconnect, not
+    /// transient.
+    #[test]
+    fn is_disconnected_recognises_linux_hot_unplug_surrogates() {
+        assert!(RtlSdrError::Usb(rusb::Error::Pipe).is_disconnected());
+        assert!(RtlSdrError::Usb(rusb::Error::Io).is_disconnected());
+    }
+
     #[test]
     fn is_disconnected_returns_false_for_other_variants() {
         assert!(!RtlSdrError::DeviceBusy.is_disconnected());
@@ -231,6 +261,11 @@ mod tests {
         assert!(!RtlSdrError::NoTuner.is_disconnected());
         assert!(!RtlSdrError::DeviceNotFound { index: 0 }.is_disconnected());
         assert!(!RtlSdrError::Tuner(TunerError::XtalIsZero).is_disconnected());
+        // `Overflow`, `Access`, `Other`, etc. are not Linux
+        // disconnect surrogates; pin them as not-disconnect so a
+        // future widening doesn't sweep too broadly.
+        assert!(!RtlSdrError::Usb(rusb::Error::Overflow).is_disconnected());
+        assert!(!RtlSdrError::Usb(rusb::Error::Access).is_disconnected());
     }
 
     #[test]
@@ -244,6 +279,7 @@ mod tests {
         assert!(!RtlSdrError::DeviceBusy.is_timeout());
         assert!(!RtlSdrError::Usb(rusb::Error::NoDevice).is_timeout());
         assert!(!RtlSdrError::Usb(rusb::Error::Io).is_timeout());
+        assert!(!RtlSdrError::Usb(rusb::Error::Pipe).is_timeout());
         assert!(
             !RtlSdrError::RegisterAccess {
                 block: crate::reg::Block::Demod,
