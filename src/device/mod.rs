@@ -576,6 +576,10 @@ impl RtlSdrDevice {
             )));
         }
 
+        tracing::info!(
+            "set_xtal_freq: rtl={rtl_freq} Hz, tuner={tuner_freq} Hz (0 = leave unchanged)"
+        );
+
         if rtl_freq > 0 && self.rtl_xtal != rtl_freq {
             self.rtl_xtal = rtl_freq;
             if self.rate > 0 {

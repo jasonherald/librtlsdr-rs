@@ -164,6 +164,7 @@ impl RtlSdrDevice {
             return Ok(());
         }
 
+        tracing::info!("set_freq_correction: {ppm} ppm");
         self.corr = ppm;
 
         self.set_sample_freq_correction(ppm)?;
@@ -242,6 +243,10 @@ impl RtlSdrDevice {
             )));
         }
 
+        tracing::info!(
+            "set_offset_tuning: {} (offs_freq = {new_offs_freq} Hz)",
+            if on { "on" } else { "off" },
+        );
         self.offs_freq = new_offs_freq;
         self.set_if_freq(self.offs_freq)?;
 
