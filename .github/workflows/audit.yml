@@ -26,10 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0-dev pkg-config
+      # No system deps needed: `cargo audit` only reads `Cargo.lock` against
+      # the rustsec advisory database — it doesn't compile the crate, so
+      # libusb-1.0-0-dev / pkg-config aren't required. Per #17.
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
