@@ -7,7 +7,7 @@
 //! - Copyright (C) 2012 by Sylvain Munaut <tnt@246tNt.com>
 //! - Copyright (C) 2012 by Hoernchen <la@tfc-server.de>
 
-use crate::error::RtlSdrError;
+use crate::error::{RtlSdrError, TunerError};
 use crate::tuner::Tuner;
 use crate::usb;
 
@@ -883,9 +883,11 @@ impl E4kTuner {
             4 => &IF_STAGE4_GAIN,
             5 | 6 => &IF_STAGE56_GAIN,
             _ => {
-                return Err(RtlSdrError::Tuner(format!(
-                    "E4K: invalid IF gain stage {stage}"
-                )));
+                return Err(TunerError::InvalidGain {
+                    what: "E4K IF gain stage",
+                    detail: format!("stage {stage} (valid: 1..=6)"),
+                }
+                .into());
             }
         };
 
@@ -895,9 +897,11 @@ impl E4kTuner {
             }
         }
 
-        Err(RtlSdrError::Tuner(format!(
-            "E4K: invalid gain value {val} dB for IF stage {stage}"
-        )))
+        Err(TunerError::InvalidGain {
+            what: "E4K IF gain",
+            detail: format!("{val} dB not valid for stage {stage}"),
+        }
+        .into())
     }
 
     /// Set the gain of one of the IF gain stages (1..6).
@@ -964,9 +968,11 @@ impl E4kTuner {
             MIXER_GAIN_4DB => 0u8,
             MIXER_GAIN_12DB => 1u8,
             _ => {
-                return Err(RtlSdrError::Tuner(format!(
-                    "E4K: invalid mixer gain {value} dB"
-                )));
+                return Err(TunerError::InvalidGain {
+                    what: "E4K mixer gain",
+                    detail: format!("{value} dB (valid: 4 or 12)"),
+                }
+                .into());
             }
         };
 
@@ -996,9 +1002,11 @@ impl E4kTuner {
         if gain == 0 {
             Ok(())
         } else {
-            Err(RtlSdrError::Tuner(format!(
-                "E4K: invalid enhancement gain {gain} (tenths of dB)"
-            )))
+            Err(TunerError::InvalidGain {
+                what: "E4K enhancement gain",
+                detail: format!("{gain} tenths of dB"),
+            }
+            .into())
         }
     }
 
@@ -1214,9 +1222,13 @@ impl Tuner for E4kTuner {
         freq: u32,
     ) -> Result<(), RtlSdrError> {
         // Determine PLL parameters
-        let p = Self::compute_pll_params(self.pll.fosc, freq).ok_or_else(|| {
-            RtlSdrError::Tuner(format!("E4K: cannot compute PLL params for {freq} Hz"))
-        })?;
+        let p = Self::compute_pll_params(self.pll.fosc, freq).ok_or(
+            TunerError::PllProgrammingFailed {
+                backend: "E4K",
+                freq_hz: freq,
+                reason: "no valid PLL combination",
+            },
+        )?;
 
         // Actually tune to those parameters
         self.tune_params(handle, &p)?;
@@ -1224,9 +1236,7 @@ impl Tuner for E4kTuner {
         // Check PLL lock
         let synth1 = self.read_reg(handle, REG_SYNTH1)?;
         if synth1 & 0x01 == 0 {
-            return Err(RtlSdrError::Tuner(format!(
-                "E4K: PLL not locked for {freq} Hz"
-            )));
+            return Err(TunerError::PllNotLocked { freq_hz: freq }.into());
         }
 
         Ok(())

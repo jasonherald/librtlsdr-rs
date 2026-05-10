@@ -42,7 +42,10 @@ impl RtlSdrDevice {
             let cmd = [addr_byte, byte];
             let r = usb::write_array(&self.handle, Block::Iic, u16::from(EEPROM_ADDR), &cmd)?;
             if r != cmd.len() {
-                return Err(RtlSdrError::RegisterAccess);
+                return Err(RtlSdrError::RegisterAccess {
+                    block: Block::Iic,
+                    address: u16::from(addr_byte),
+                });
             }
 
             // Delay for EEPROM write cycle (5ms)

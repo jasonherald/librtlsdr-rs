@@ -131,7 +131,11 @@ pub use device::{
     DeviceInfo, ReaderIter, RtlSdrDevice, RtlSdrDeviceBuilder, RtlSdrReader, SampleIter,
     get_device_count, get_device_name, get_device_usb_strings, get_index_by_serial, list_devices,
 };
-pub use error::RtlSdrError;
+pub use error::{RtlSdrError, TunerError};
+// Re-export `Block` from the internal `reg` module. Block became
+// part of the public API in 0.2 because `RtlSdrError::RegisterAccess`
+// now carries `block: Block` for diagnostic context. Per #16.
+pub use reg::Block;
 // Re-export `TunerType` from the internal `reg` module. The
 // rendered docs use the source's own doc on `reg::TunerType`
 // (which is more comprehensive than a one-line summary on the

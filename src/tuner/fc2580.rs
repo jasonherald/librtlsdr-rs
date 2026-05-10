@@ -6,7 +6,7 @@
 //! - FCI FC2580 tuner driver, taken from the kernel driver that can be found
 //!   on <http://linux.terratec.de/tv_en.html>
 
-use crate::error::RtlSdrError;
+use crate::error::{RtlSdrError, TunerError};
 use crate::tuner::Tuner;
 use crate::usb;
 
@@ -410,9 +410,7 @@ impl Fc2580Tuner {
     fn xtal_khz(&self) -> Result<u32, RtlSdrError> {
         let khz = self.xtal.saturating_add(500) / 1000;
         if khz == 0 {
-            return Err(RtlSdrError::Tuner(
-                "FC2580: crystal frequency too low".to_string(),
-            ));
+            return Err(TunerError::XtalIsZero.into());
         }
         Ok(khz)
     }
@@ -501,9 +499,7 @@ impl Fc2580Tuner {
                 self.write_reg(handle, REG_2E, FILTER_CAL_TRIGGER)?;
             }
             _ => {
-                return Err(RtlSdrError::Tuner(format!(
-                    "FC2580: unsupported filter bandwidth mode {filter_bw}"
-                )));
+                return Err(TunerError::UnsupportedFilterBandwidth { mode: filter_bw }.into());
             }
         }
 
@@ -733,9 +729,12 @@ impl Fc2580Tuner {
 
         // Load N value (must fit in u8 register)
         if n_val > 255 {
-            return Err(RtlSdrError::Tuner(format!(
-                "FC2580 PLL n_val {n_val} exceeds u8 range"
-            )));
+            return Err(TunerError::PllProgrammingFailed {
+                backend: "FC2580",
+                freq_hz: f_lo_khz.saturating_mul(1_000),
+                reason: "PLL n_val exceeds u8 range",
+            }
+            .into());
         }
         self.write_reg(handle, REG_1C, n_val as u8)?;
 

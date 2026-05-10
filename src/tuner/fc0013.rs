@@ -7,7 +7,7 @@
 //! - Copyright (C) 2010 Fitipower Integrated Technology Inc (partial driver code)
 //! - Copyright (C) 2012 Steve Markgraf <steve@steve-m.de> (librtlsdr modifications)
 
-use crate::error::RtlSdrError;
+use crate::error::{RtlSdrError, TunerError};
 use crate::tuner::Tuner;
 use crate::usb;
 
@@ -554,9 +554,12 @@ impl Fc0013Tuner {
             // matching site for the full C-upstream-bug
             // explanation. Per audit #14.
             if pm == 0 {
-                return Err(RtlSdrError::Tuner(format!(
-                    "FC0013: PLL inputs out of range (xdiv={xdiv}) for {freq} Hz"
-                )));
+                return Err(TunerError::PllProgrammingFailed {
+                    backend: "FC0013",
+                    freq_hz: freq,
+                    reason: "PLL inputs out of range (xdiv too small)",
+                }
+                .into());
             }
             am += 8;
             pm -= 1;
@@ -569,9 +572,12 @@ impl Fc0013Tuner {
         };
 
         if reg1 > PLL_REG1_MAX || reg2 < PLL_REG2_MIN {
-            return Err(RtlSdrError::Tuner(format!(
-                "FC0013: no valid PLL combination found for {freq} Hz"
-            )));
+            return Err(TunerError::PllProgrammingFailed {
+                backend: "FC0013",
+                freq_hz: freq,
+                reason: "no valid PLL combination",
+            }
+            .into());
         }
 
         // Fix clock out

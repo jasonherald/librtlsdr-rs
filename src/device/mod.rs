@@ -460,15 +460,21 @@ impl RtlSdrDevice {
     /// steps from -1 to 49 dB, etc. The result is always one of
     /// those exact values, never an interpolation.
     ///
-    /// Returns `0` (a no-op gain) when the tuner has no gain table
-    /// at all — in practice only the `Unknown` tuner type, which
-    /// means the device hasn't been probed or the IC isn't in our
-    /// known-tuners list.
+    /// Returns `None` when the tuner has no gain table at all (in
+    /// practice only the `Unknown` tuner type, which means the
+    /// device hasn't been probed or the IC isn't in our
+    /// known-tuners list).
     ///
     /// **Manual gain mode must be enabled** for `set_tuner_gain` to
     /// take effect (the example calls `set_tuner_gain_mode(true)`
     /// first). In AGC mode the tuner picks its own gain and ignores
-    /// the value you set. Per audit issue #19.
+    /// the value you set.
+    ///
+    /// **Since 0.2 (per #16):** returns `Option<i32>` instead of
+    /// `i32`. In 0.1.x this method returned `0` for both "no gain
+    /// table" and "0 was the closest step", which was ambiguous.
+    /// The 0.1.x `try_closest_gain` companion is removed; this is
+    /// now the only spelling.
     ///
     /// ```no_run
     /// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
@@ -476,46 +482,15 @@ impl RtlSdrDevice {
     /// let mut dev = RtlSdrDevice::open(0)?;
     /// dev.set_tuner_gain_mode(true)?;
     /// // User picked "around 15 dB" in the UI; pick the actual step.
-    /// let step = dev.closest_gain(150);
-    /// dev.set_tuner_gain(step)?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[must_use]
-    pub fn closest_gain(&self, desired_tenths_db: i32) -> i32 {
-        closest_gain_in(self.tuner_gains(), desired_tenths_db)
-    }
-
-    /// Like [`Self::closest_gain`] but returns `None` when the
-    /// tuner has no gain table — distinguishes "we picked the
-    /// nearest step (which happens to be 0)" from "no gain
-    /// table is available at all" (in practice only the
-    /// `Unknown` tuner type, e.g. the device hasn't been probed
-    /// or the IC isn't in our known-tuners list).
-    ///
-    /// `closest_gain` overloads `0` for both meanings — useful
-    /// today since `0` is also a no-op gain, but ambiguous if
-    /// the consumer wants to detect the no-table case
-    /// programmatically. This method is the disambiguation path
-    /// added in audit #15; a future semver-major (#16) will
-    /// likely change `closest_gain` to return `Option<i32>`
-    /// directly and deprecate this helper.
-    ///
-    /// ```no_run
-    /// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
-    /// # fn main() -> Result<(), RtlSdrError> {
-    /// let mut dev = RtlSdrDevice::open(0)?;
-    /// dev.set_tuner_gain_mode(true)?;
-    /// match dev.try_closest_gain(150) {
-    ///     Some(step) => dev.set_tuner_gain(step)?,
-    ///     None => eprintln!("no gain table for this tuner; leaving AGC on"),
+    /// if let Some(step) = dev.closest_gain(150) {
+    ///     dev.set_tuner_gain(step)?;
     /// }
     /// # Ok(())
     /// # }
     /// ```
     #[must_use]
-    pub fn try_closest_gain(&self, desired_tenths_db: i32) -> Option<i32> {
-        try_closest_gain_in(self.tuner_gains(), desired_tenths_db)
+    pub fn closest_gain(&self, desired_tenths_db: i32) -> Option<i32> {
+        closest_gain_in(self.tuner_gains(), desired_tenths_db)
     }
 
     /// Get device manufacturer string.
@@ -683,7 +658,7 @@ impl Drop for RtlSdrDevice {
 }
 
 /// Find the closest entry in a tuner-gain table to `desired`,
-/// returning `0` for an empty table. Pulled out of
+/// returning `None` for an empty table. Pulled out of
 /// [`RtlSdrDevice::closest_gain`] so the algorithm can be unit-
 /// tested without constructing a live device.
 ///
@@ -696,26 +671,11 @@ impl Drop for RtlSdrDevice {
 /// when the subtraction overflows (e.g. `desired == i32::MIN`)
 /// and silently wraps in release. Real callers won't pass such
 /// values, but the algorithm shouldn't be a footgun.
-fn closest_gain_in(gains: &[i32], desired: i32) -> i32 {
+fn closest_gain_in(gains: &[i32], desired: i32) -> Option<i32> {
     gains
         .iter()
         .copied()
         .min_by_key(|&g| (i64::from(g) - i64::from(desired)).abs())
-        .unwrap_or(0)
-}
-
-/// `Option<i32>` variant of [`closest_gain_in`] — returns `None`
-/// for an empty gain table instead of overloading `0` (which is
-/// ambiguous since `0` is also a valid no-op gain step). Powers
-/// [`RtlSdrDevice::try_closest_gain`]; pulled out for the same
-/// "test without a live device" reason as `closest_gain_in`.
-/// Per audit #15.
-fn try_closest_gain_in(gains: &[i32], desired: i32) -> Option<i32> {
-    if gains.is_empty() {
-        None
-    } else {
-        Some(closest_gain_in(gains, desired))
-    }
 }
 
 // Pin the `Send`-but-not-`Sync` contract documented on the
@@ -774,7 +734,7 @@ impl std::fmt::Debug for RtlSdrDevice {
 
 #[cfg(test)]
 mod tests {
-    use super::{closest_gain_in, try_closest_gain_in};
+    use super::closest_gain_in;
 
     // R820T2 gain table (29 steps, tenths of dB) — pinned here
     // rather than imported so the test exercises a known-real
@@ -784,11 +744,16 @@ mod tests {
         372, 386, 402, 421, 434, 439, 445, 480, 496,
     ];
 
+    /// Since 0.2 (#16): empty table returns `None` instead of
+    /// overloading `0`. Distinguishes "no gain table" from
+    /// "0 was the closest step" — formerly the role of
+    /// `try_closest_gain_in`, now the only spelling.
     #[test]
-    fn empty_table_returns_zero() {
-        assert_eq!(closest_gain_in(&[], 250), 0);
-        assert_eq!(closest_gain_in(&[], 0), 0);
-        assert_eq!(closest_gain_in(&[], -100), 0);
+    fn empty_table_returns_none() {
+        assert_eq!(closest_gain_in(&[], 250), None);
+        assert_eq!(closest_gain_in(&[], 0), None);
+        assert_eq!(closest_gain_in(&[], -100), None);
+        assert_eq!(closest_gain_in(&[], i32::MIN), None);
     }
 
     #[test]
@@ -796,7 +761,7 @@ mod tests {
         for &g in R820T2_GAINS {
             assert_eq!(
                 closest_gain_in(R820T2_GAINS, g),
-                g,
+                Some(g),
                 "exact value {g} should round to itself"
             );
         }
@@ -804,24 +769,21 @@ mod tests {
 
     #[test]
     fn rounds_to_nearest_step() {
-        // 150 is between 144 and 157 — closer to 157 (Δ=7) than
-        // to 144 (Δ=6). Wait — that's |150-144|=6 vs |150-157|=7,
-        // so 144 wins.
-        assert_eq!(closest_gain_in(R820T2_GAINS, 150), 144);
+        // 150 is between 144 and 157 — closer to 144 (|150-144|=6
+        // vs |150-157|=7), so 144 wins.
+        assert_eq!(closest_gain_in(R820T2_GAINS, 150), Some(144));
 
-        // 152 is exactly between 144 (Δ=8) and 157 (Δ=5) → 157.
-        assert_eq!(closest_gain_in(R820T2_GAINS, 152), 157);
+        // 152: |152-144|=8 vs |152-157|=5 → 157.
+        assert_eq!(closest_gain_in(R820T2_GAINS, 152), Some(157));
 
-        // 100 is between 87 (Δ=13) and 125 (Δ=25) → 87.
-        assert_eq!(closest_gain_in(R820T2_GAINS, 100), 87);
+        // 100: |100-87|=13 vs |100-125|=25 → 87.
+        assert_eq!(closest_gain_in(R820T2_GAINS, 100), Some(87));
     }
 
     #[test]
     fn out_of_range_clamps_to_endpoint() {
-        // Below the minimum: clamp to first entry.
-        assert_eq!(closest_gain_in(R820T2_GAINS, -1000), 0);
-        // Above the maximum: clamp to last entry.
-        assert_eq!(closest_gain_in(R820T2_GAINS, 10_000), 496);
+        assert_eq!(closest_gain_in(R820T2_GAINS, -1000), Some(0));
+        assert_eq!(closest_gain_in(R820T2_GAINS, 10_000), Some(496));
     }
 
     #[test]
@@ -830,7 +792,7 @@ mod tests {
         // `min_by_key` over a stable iterator, the first
         // equally-distant entry wins → 0.
         let table = &[0, 100];
-        assert_eq!(closest_gain_in(table, 50), 0);
+        assert_eq!(closest_gain_in(table, 50), Some(0));
     }
 
     #[test]
@@ -840,29 +802,16 @@ mod tests {
         // because `0 - i32::MIN` and `i32::MIN.abs()` both
         // overflow. The fix promotes the distance to `i64` —
         // pin it so we don't regress. Per #631 CR round 1.
-        assert_eq!(closest_gain_in(R820T2_GAINS, i32::MIN), 0);
-        assert_eq!(closest_gain_in(R820T2_GAINS, i32::MAX), 496);
+        assert_eq!(closest_gain_in(R820T2_GAINS, i32::MIN), Some(0));
+        assert_eq!(closest_gain_in(R820T2_GAINS, i32::MAX), Some(496));
     }
 
-    /// Per #15: `try_closest_gain_in` distinguishes the
-    /// no-table case from the "table contains 0 and we picked it"
-    /// case that `closest_gain_in` overloads.
+    /// Pin that `Some(0)` is a real picked-step result, not a
+    /// confused empty-table sentinel — the disambiguation #16 is
+    /// supposed to enable.
     #[test]
-    fn try_closest_gain_in_empty_table_returns_none() {
-        assert_eq!(try_closest_gain_in(&[], 250), None);
-        assert_eq!(try_closest_gain_in(&[], 0), None);
-        assert_eq!(try_closest_gain_in(&[], i32::MIN), None);
-    }
-
-    #[test]
-    fn try_closest_gain_in_non_empty_matches_closest_gain_in() {
-        // Spot-check the same inputs as `rounds_to_nearest_step`
-        // produce `Some(<closest>)` from try_closest_gain_in.
-        assert_eq!(try_closest_gain_in(R820T2_GAINS, 150), Some(144));
-        assert_eq!(try_closest_gain_in(R820T2_GAINS, 152), Some(157));
-        assert_eq!(try_closest_gain_in(R820T2_GAINS, 100), Some(87));
-        // 0 is a real entry; verify we don't conflate it with the
-        // empty-table case.
-        assert_eq!(try_closest_gain_in(R820T2_GAINS, 0), Some(0));
+    fn zero_step_is_distinguishable_from_empty_table() {
+        assert_eq!(closest_gain_in(R820T2_GAINS, 0), Some(0));
+        assert_eq!(closest_gain_in(&[], 0), None);
     }
 }
