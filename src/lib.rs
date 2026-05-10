@@ -138,3 +138,11 @@ pub use error::RtlSdrError;
 /// "tuner: R820T2" in a UI or for branching gain-table queries
 /// since each tuner has its own discrete gain steps.
 pub use reg::TunerType;
+// Re-export `rusb` so consumers pattern-matching on
+// `RtlSdrError::Usb(rusb::Error::...)` can do so without taking a
+// direct `rusb` dependency in their own `Cargo.toml` — and, more
+// importantly, without risking a dep version mismatch where the
+// consumer resolves a different `rusb` minor than this crate
+// (which would make the inner `rusb::Error` types non-compatible
+// at the type level). Per audit #15.
+pub use rusb;
