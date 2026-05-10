@@ -768,7 +768,23 @@ impl E4kTuner {
         let mut r: u8 = 2;
         let mut r_idx: u8 = 0;
 
-        // Find the appropriate PLL divider settings
+        // Find the appropriate PLL divider settings.
+        //
+        // **Unmatched-fallthrough note (per audit pass-2 #66):**
+        // when `intended_flo_khz` exceeds the largest entry in
+        // `PLL_VARS` (1.2 GHz), neither `r` nor `r_idx` is
+        // updated and the function proceeds with the initial
+        // defaults `r = 2, r_idx = 0`. The E4000 max LO is
+        // ~2.2 GHz, so any frequency in the 1.2-2.2 GHz range
+        // hits this fall-through.
+        //
+        // This is intentional and matches C upstream
+        // (`tuner_e4k.c::e4k_compute_pll_params`); the
+        // `x_raw > u16::MAX || z > 255` check below
+        // catches the resulting bad PLL params (returns `None`
+        // → caller surfaces `PllProgrammingFailed`). Don't
+        // "fix" the loop to fall through to the largest entry;
+        // the safety net is the post-divide bound check.
         let intended_flo_khz = intended_flo / 1000;
         for entry in &PLL_VARS {
             if intended_flo_khz < entry.freq_khz {
