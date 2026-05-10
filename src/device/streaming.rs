@@ -79,6 +79,23 @@ impl RtlSdrDevice {
     ///
     /// The returned Arc can be sent to another thread for concurrent bulk reads
     /// while the main thread retains access for control transfers.
+    ///
+    /// # Concurrency hazard
+    ///
+    /// This is the *escape hatch* around the single-active-stream
+    /// guard that [`Self::read_sync`], [`Self::iter_samples`],
+    /// [`Self::read_async_blocking`], and the
+    /// [`super::RtlSdrReader`] streaming methods enforce via
+    /// [`RtlSdrError::DeviceBusy`]. Doing your own
+    /// `read_bulk(BULK_ENDPOINT, ...)` on this handle bypasses
+    /// that guard entirely.
+    ///
+    /// libusb permits concurrent bulk submits on the same
+    /// endpoint, but the responses interleave non-deterministically
+    /// — each thread sees valid bytes for its own libusb transfer,
+    /// but neither has the complete IQ stream. Only use this
+    /// escape hatch if you serialize bulk reads yourself (one
+    /// worker thread at a time on endpoint 0x81). Per #7.
     pub fn usb_handle(&self) -> std::sync::Arc<rusb::DeviceHandle<rusb::GlobalContext>> {
         std::sync::Arc::clone(&self.handle)
     }

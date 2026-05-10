@@ -101,11 +101,10 @@ impl Drop for ReaderBusyGuard {
 /// # Concurrency safety
 ///
 /// The shared-handle pattern (one `Arc<DeviceHandle>` reffed by
-/// both the parent device and any number of readers) is what
-/// upstream `librtlsdr`'s reference implementations have used for
-/// years. Bulk reads on endpoint 0x81 don't interfere with
-/// control transfers on endpoint 0x00 at the libusb level on
-/// real hardware.
+/// both the parent device and any reader) is what upstream
+/// `librtlsdr`'s reference implementations have used for years.
+/// Bulk reads on endpoint 0x81 don't interfere with control
+/// transfers on endpoint 0x00 at the libusb level on real hardware.
 ///
 /// **However**, libusb's documentation does not formally
 /// guarantee that concurrent bulk and control transfers on a
@@ -118,12 +117,34 @@ impl Drop for ReaderBusyGuard {
 /// the dongles in active use; verify against your specific
 /// hardware in production.
 ///
+/// # Single active streaming session
+///
+/// At most one bulk-read activity may be in flight on the device
+/// at a time — across `RtlSdrDevice::{read_sync, iter_samples,
+/// read_async_blocking}` and `RtlSdrReader::{read_sync,
+/// iter_samples, stream_samples_tokio, stream_samples_smol}`.
+/// Concurrent attempts return [`RtlSdrError::DeviceBusy`].
+///
+/// This invariant exists because libusb permits concurrent submits
+/// on the same endpoint, but the resulting transfer responses
+/// interleave non-deterministically — each thread sees valid
+/// bytes for its own libusb transfer, but neither has the
+/// complete IQ stream. The runtime guard makes the contention
+/// observable as a typed error rather than as silent
+/// sample-stream corruption.
+///
+/// `RtlSdrDevice::usb_handle()` is the documented escape hatch and
+/// is *not* gated; bypassing the typed reader path lets you
+/// re-create the corruption hazard. See its method docs.
+///
 /// # Cheap clone via the device
 ///
 /// A [`RtlSdrReader`] is just an `Arc` clone of the device's USB
-/// handle plus an init flag. Build one via [`RtlSdrDevice::reader`]
-/// any time you need a fresh streaming handle — the cost is one
-/// atomic increment.
+/// handle plus the per-device busy-flag. Build one via
+/// [`RtlSdrDevice::reader`] any time you need a fresh streaming
+/// handle — the cost is two atomic increments. Cloning is allowed
+/// (and cheap), but only one clone may have an active streaming
+/// session at a time; the rest get [`RtlSdrError::DeviceBusy`].
 #[derive(Clone)]
 pub struct RtlSdrReader {
     pub(crate) handle: Arc<rusb::DeviceHandle<rusb::GlobalContext>>,
