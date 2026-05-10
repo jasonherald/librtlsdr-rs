@@ -165,11 +165,19 @@ impl RtlSdrDevice {
         }
 
         tracing::info!("set_freq_correction: {ppm} ppm");
+
+        // Order matters: write the demod registers FIRST, only
+        // update the cache after success. Pre-#45,
+        // `self.corr = ppm` happened before the fallible
+        // `set_sample_freq_correction(ppm)?` — on failure the
+        // cache lied, and `get_rtl_xtal()` / `get_tuner_xtal()`
+        // (used by `xtal_freq()` and tuner re-init) returned
+        // wrongly-corrected values. Per audit pass-2 #45.
+        self.set_sample_freq_correction(ppm)?;
         self.corr = ppm;
 
-        self.set_sample_freq_correction(ppm)?;
-
-        // Propagate corrected xtal to tuner (audit fix #4)
+        // Propagate corrected xtal to tuner (audit fix #4).
+        // `get_tuner_xtal()` now reads the just-updated `self.corr`.
         let corrected_xtal = self.get_tuner_xtal();
         if let Some(tuner) = &mut self.tuner {
             tuner.set_xtal(corrected_xtal);
