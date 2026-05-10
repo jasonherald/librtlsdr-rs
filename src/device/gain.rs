@@ -20,9 +20,17 @@ impl RtlSdrDevice {
 
             if result.is_ok() {
                 self.gain = gain;
-            } else {
-                self.gain = 0;
             }
+            // Pre-#46 (0.2.1 and earlier) reset `self.gain = 0`
+            // on the error path. But `0` is a *valid* tuner gain
+            // (it's the first entry in `R82XX_GAINS`), so the
+            // reset made `tuner_gain()` lie that gain was 0 dB
+            // when in practice the hardware likely still held
+            // the previous setting. Now: leave the cache alone
+            // on `Err` — the cached value continues to reflect
+            // the last *successful* setting, matching the
+            // contract `tuner_gain()` documents. Per audit
+            // pass-2 #46.
             result
         } else {
             Ok(())
