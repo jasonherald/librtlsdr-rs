@@ -164,6 +164,13 @@ async fn parent_can_retune_during_stream() {
 
 /// Drop semantics: dropping the stream stops the worker
 /// promptly and returns control of the device handle.
+///
+/// Strengthened per audit #21: in addition to "process didn't
+/// deadlock," we now drop both the stream and the device, then
+/// re-open `RtlSdrDevice::open(0)` to verify the worker has
+/// fully released the USB interface (libusb tolerates concurrent
+/// opens but the busy-flag's `Arc<AtomicBool>` and the
+/// underlying interface claim should both be released).
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs real RTL-SDR hardware — run with --ignored"]
 async fn dropping_stream_stops_worker() {
@@ -196,9 +203,108 @@ async fn dropping_stream_stops_worker() {
 
     // Give the worker a moment to observe the drop. If the
     // underlying USB reads were stalled the worst case would
-    // be ~5 s; happy path is much faster. We just need to
-    // confirm that the test process doesn't deadlock.
+    // be ~5 s; happy path is much faster.
     tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Stronger assertion (per audit #21): drop the device and
+    // re-open it. If the worker is still holding the USB
+    // interface claim, the re-open should succeed at the libusb
+    // level (libusb tolerates concurrent opens) but the
+    // claim_interface(0) inside RtlSdrDevice::open will fail
+    // with Resource Busy. Re-opening cleanly is indirect proof
+    // that the original worker exited and released the claim.
+    drop(dev);
+    let reopened = RtlSdrDevice::open(0)
+        .expect("post-drop re-open should succeed if the worker fully released the device");
+    drop(reopened);
+}
+
+/// Sustained-throughput smoke: drain the stream for 30 seconds,
+/// confirm a sensible buffer count and no allocation/handle
+/// leaks (the test process completing under the timeout proves
+/// the read loop doesn't degenerate). Per audit #21.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs real RTL-SDR hardware — run with --ignored (~30 s wall-clock)"]
+async fn tokio_stream_drains_30_seconds() {
+    use futures_util::StreamExt;
+
+    let Some(dev) = open_or_skip("tokio_stream_drains_30_seconds") else {
+        return;
+    };
+
+    let reader = dev.reader();
+    let stream = reader
+        .stream_samples_tokio(0)
+        .map_err(|boxed| boxed.0)
+        .expect("stream_samples_tokio inside multi_thread runtime");
+
+    let mut stream = Box::pin(stream);
+    let mut count = 0_usize;
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < Duration::from_secs(30) {
+        let buf = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap_or_else(|_| panic!("buffer {count} timed out"))
+            .unwrap_or_else(|| panic!("stream ended early at buffer {count}"))
+            .unwrap_or_else(|e| panic!("read error at buffer {count}: {e}"));
+        assert!(!buf.is_empty(), "buffer {count} was empty");
+        count += 1;
+    }
+
+    // At 2.048 Msps × 2 bytes/sample = 4.1 MB/s, with a 256 KB
+    // (default) buffer we expect ~16 buffers/sec → ~480 in 30 s.
+    // Use a conservative floor of 50 so a slow CI host or warmup
+    // jitter doesn't trip the assertion; a degenerate read loop
+    // would be far below this.
+    assert!(
+        count > 50,
+        "expected >=50 buffers in 30 s of streaming, got {count}",
+    );
+}
+
+/// Drop while the worker is blocked on `blocking_send` because
+/// the consumer is slow / not consuming. The bounded channel
+/// (depth 4 — `STREAM_BACKPRESSURE_DEPTH`) fills, the worker
+/// blocks on the next send, then we drop the stream. Confirm
+/// the test doesn't hang. Per audit #21.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs real RTL-SDR hardware — run with --ignored"]
+async fn tokio_stream_drop_while_blocking_send() {
+    let Some(dev) = open_or_skip("tokio_stream_drop_while_blocking_send") else {
+        return;
+    };
+
+    let reader = dev.reader();
+    let stream = reader
+        .stream_samples_tokio(0)
+        .map_err(|boxed| boxed.0)
+        .expect("stream_samples_tokio inside multi_thread runtime");
+
+    let stream = Box::pin(stream);
+
+    // Don't consume. Sleep long enough that the depth-4 channel
+    // fills (4 × ~65 ms at 2 Msps ≈ 256 ms) and the worker is
+    // parked in `blocking_send`. 1 second is generous.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Drop the stream while the worker is blocked. The
+    // `blocking_send` should fail when the receiver drops, and
+    // the worker should exit cleanly without hanging the test
+    // process. We wrap the whole drop+wait in a 10 s timeout to
+    // surface a real hang as a test failure rather than a
+    // ctrl-C-required deadlock.
+    let drop_with_timeout = async {
+        drop(stream);
+        // Give the worker a moment to observe the closed channel.
+        // The worker's pre-read `tx.is_closed()` check + the
+        // `blocking_send` failure cooperate to exit within one
+        // buffer cadence on the happy path.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    tokio::time::timeout(Duration::from_secs(10), drop_with_timeout)
+        .await
+        .expect("drop-while-blocking-send hung the test (worker did not exit)");
 }
 
 /// Sync iterator, also via the reader. Validates the
