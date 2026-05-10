@@ -162,6 +162,12 @@ pub struct RtlSdrReader {
     /// bulk-read entry point on this reader to enforce single-active-
     /// reader. Per #7.
     pub(crate) busy: Arc<AtomicBool>,
+    /// Per-device disconnect flag (cloned from the parent
+    /// [`RtlSdrDevice::dev_lost`]). Set by [`bulk_read`] on the
+    /// `NoDevice → DeviceLost` translation so the parent
+    /// device's `Drop` skips cleanup against a vanished handle.
+    /// Per audit pass-2 #40.
+    pub(crate) dev_lost: Arc<AtomicBool>,
 }
 
 impl RtlSdrReader {
@@ -183,7 +189,7 @@ impl RtlSdrReader {
     ///   error.
     pub fn read_sync(&self, buf: &mut [u8]) -> Result<usize, RtlSdrError> {
         let _guard = ReaderBusyGuard::try_acquire(Arc::clone(&self.busy))?;
-        super::streaming::bulk_read(&self.handle, buf)
+        super::streaming::bulk_read(&self.handle, &self.dev_lost, buf)
     }
 
     /// Sync iterator over IQ-sample buffers, consuming the
@@ -269,7 +275,7 @@ impl Iterator for ReaderIter {
         // Bypass `reader.read_sync` (which would re-acquire its own
         // guard per call) — the iterator already holds the guard
         // for its lifetime via `_guard`. Per #7.
-        match super::streaming::bulk_read(&reader.handle, &mut buf) {
+        match super::streaming::bulk_read(&reader.handle, &reader.dev_lost, &mut buf) {
             Ok(0) => {
                 self.reader = None;
                 None

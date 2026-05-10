@@ -152,7 +152,7 @@ impl RtlSdrReader {
                     return;
                 }
                 let mut buf = vec![0u8; buffer_size];
-                match super::streaming::bulk_read(&reader.handle, &mut buf) {
+                match super::streaming::bulk_read(&reader.handle, &reader.dev_lost, &mut buf) {
                     Ok(0) => return, // fuse on zero-length read
                     Ok(n) => {
                         buf.truncate(n);
