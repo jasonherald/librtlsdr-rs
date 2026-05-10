@@ -426,8 +426,18 @@ impl Tuner for R82xxPriv {
         bw: u32,
         _sample_rate: u32,
     ) -> Result<u32, RtlSdrError> {
+        // Clamp before the i32 cast: any `bw > i32::MAX`
+        // (≈2.1 GHz, absurd as a real bandwidth) would
+        // reinterpret as negative, fall through the
+        // `if bw > 7_000_000 ... else if ... else { mut bw -= ... }`
+        // chain into the narrowest-filter branch with negative
+        // intermediates. The math doesn't crash but the silent
+        // reinterpretation isn't defensive — clamp upward
+        // explicitly so an out-of-range u32 picks the widest
+        // filter (closest plausible match) instead. Per audit
+        // pass-2 #65.
         #[allow(clippy::similar_names)]
-        let bw = bw as i32;
+        let bw = bw.min(i32::MAX as u32) as i32;
 
         let (reg_0a, reg_0b, int_freq) = if bw > 7_000_000 {
             // BW: 8 MHz
