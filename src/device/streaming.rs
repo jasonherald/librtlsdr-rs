@@ -522,12 +522,20 @@ mod tests {
         }
     }
 
-    /// Pin that genuinely-transient transport errors do NOT
-    /// trip the disconnect flag. `Timeout` is the most important
-    /// — a slow stream is healthy, not lost.
+    /// Pin that genuinely-transient or unrelated transport
+    /// errors do NOT trip the disconnect flag. `Timeout` is the
+    /// most important — a slow stream is healthy, not lost.
+    /// `Access` and `Overflow` mirror the exclusion set the
+    /// `is_disconnected` test pins (CodeRabbit on PR #80) so
+    /// the two surfaces stay in sync — a future widening of
+    /// either set fires both tests.
     #[test]
     fn translate_other_errors_do_not_touch_dev_lost_flag() {
-        for kind in [rusb::Error::Timeout, rusb::Error::Overflow] {
+        for kind in [
+            rusb::Error::Timeout,
+            rusb::Error::Overflow,
+            rusb::Error::Access,
+        ] {
             let flag = AtomicBool::new(false);
             let _ = translate_bulk_result(Err(kind), &flag);
             assert!(
