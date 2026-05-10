@@ -46,9 +46,18 @@ fn open_or_skip(test_name: &str) -> Option<RtlSdrDevice> {
         Ok(mut dev) => {
             // Stable, valid-everywhere config: FM broadcast in
             // most regions, 2.048 Msps.
-            dev.set_sample_rate(2_048_000).ok()?;
-            dev.set_center_freq(100_000_000).ok()?;
-            dev.reset_buffer().ok()?;
+            //
+            // Config failures here are real bugs (the device
+            // opened cleanly, so the configuration call should
+            // succeed) — fail the test loudly rather than treating
+            // them as "skip" via the pre-#13-round-2 `.ok()?`
+            // pattern that masked them as missing-hardware.
+            dev.set_sample_rate(2_048_000)
+                .unwrap_or_else(|e| panic!("[{test_name}] set_sample_rate failed: {e}"));
+            dev.set_center_freq(100_000_000)
+                .unwrap_or_else(|e| panic!("[{test_name}] set_center_freq failed: {e}"));
+            dev.reset_buffer()
+                .unwrap_or_else(|e| panic!("[{test_name}] reset_buffer failed: {e}"));
             Some(dev)
         }
         Err(e) => {
