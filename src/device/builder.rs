@@ -92,16 +92,31 @@ impl RtlSdrDeviceBuilder {
     ///
     /// # Errors
     ///
+    /// Failure shape depends on which selector you chose:
+    ///
+    /// **Index path (`.index(N)` or default):**
     /// - [`RtlSdrError::DeviceNotFound`] when the index is out of
-    ///   range OR no devices are plugged in at all (the
-    ///   underlying [`super::enumerate::get_index_by_serial`]
-    ///   returns this when its enumerate sees zero devices).
-    /// - [`RtlSdrError::InvalidParameter`] when devices are
-    ///   present but no plugged-in dongle's serial matches the
-    ///   one supplied.
+    ///   range OR no devices are plugged in at all.
+    ///
+    /// **Serial path (`.serial(s)`):**
+    /// - [`RtlSdrError::InvalidParameter`] when no plugged-in
+    ///   dongle's serial matches — including the no-devices case
+    ///   (`get_index_by_serial` returns `InvalidParameter` rather
+    ///   than `DeviceNotFound` when the enumerate is empty,
+    ///   because the failure mode is "this serial isn't here,"
+    ///   not "this index is out of range." Per #6 / 0.1.1 fix.)
+    ///   The error message names the requested serial string for
+    ///   diagnosis.
+    ///
+    /// **Both paths:**
     /// - Any [`RtlSdrError`] [`RtlSdrDevice::open`] would return on
     ///   the resolved index (USB transport errors, baseband-init
     ///   failure, unknown tuner, etc.).
+    ///
+    /// In particular: `DeviceNotFound` only fires on the index
+    /// path. If you want a single error code that covers
+    /// "couldn't find a device by either selector," handle both
+    /// `DeviceNotFound` and `InvalidParameter` at the call site.
     pub fn open(self) -> Result<RtlSdrDevice, RtlSdrError> {
         let index = match self.selector {
             Selector::Index(i) => i,
