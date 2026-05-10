@@ -132,11 +132,10 @@ pub use device::{
     get_device_count, get_device_name, get_device_usb_strings, get_index_by_serial, list_devices,
 };
 pub use error::RtlSdrError;
-/// Tuner family identifier for the IC inside the dongle.
-///
-/// Returned by [`RtlSdrDevice::tuner_type`]. Useful for displaying
-/// "tuner: R820T2" in a UI or for branching gain-table queries
-/// since each tuner has its own discrete gain steps.
+// Re-export `TunerType` from the internal `reg` module. The
+// rendered docs use the source's own doc on `reg::TunerType`
+// (which is more comprehensive than a one-line summary on the
+// re-export). Per audit issue #19.
 pub use reg::TunerType;
 // Re-export `rusb` so consumers pattern-matching on
 // `RtlSdrError::Usb(rusb::Error::...)` can do so without taking a
