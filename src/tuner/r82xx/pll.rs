@@ -24,10 +24,20 @@ impl R82xxPriv {
         handle: &rusb::DeviceHandle<rusb::GlobalContext>,
         freq: u32,
     ) -> Result<(), RtlSdrError> {
+        let pll_ref = self.xtal;
+        // Guard: a zero crystal frequency would div-by-zero in the
+        // `vco_div = ... / (2 * pll_ref)` calculation below. Caught
+        // explicitly with a typed error rather than letting it
+        // panic. Per audit slice D / #11.
+        if pll_ref == 0 {
+            return Err(RtlSdrError::Tuner(
+                "PLL reference (xtal) is zero".to_string(),
+            ));
+        }
+
         let vco_min: u32 = 1_770_000; // kHz
         let vco_max: u32 = vco_min * 2;
         let freq_khz = freq.saturating_add(500) / 1000;
-        let pll_ref = self.xtal;
 
         // Set PLL autotune = 128kHz
         self.write_reg_mask(handle, 0x1a, 0x00, 0x0c)?;
@@ -131,12 +141,15 @@ impl R82xxPriv {
         }
 
         if !locked {
-            tracing::warn!("[R82XX] PLL not locked for {freq} Hz");
-            self.has_lock = false;
-            return Ok(());
+            // Pre-#11 this returned Ok(()) and set `self.has_lock =
+            // false`, requiring every caller to remember to check
+            // the field. New callers who forgot would silently tune
+            // to a wrong frequency. Now propagate as Err so the
+            // typed error path is the only outcome — matches the
+            // sibling tuners (E4K returns Err on lock failure).
+            // Per audit slice D I-5 / #11.
+            return Err(RtlSdrError::Tuner(format!("PLL not locked for {freq} Hz")));
         }
-
-        self.has_lock = true;
 
         // Set PLL autotune = 8kHz
         self.write_reg_mask(handle, 0x1a, 0x08, 0x08)?;
