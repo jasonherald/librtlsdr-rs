@@ -44,11 +44,22 @@ use super::reader::ReaderBusyGuard;
 // makes Receiver Unpin (unlikely without a major version bump).
 type BoxedReceiver = Pin<Box<async_channel::Receiver<Result<Vec<u8>, RtlSdrError>>>>;
 impl RtlSdrReader {
-    /// Stream IQ samples as a smol-friendly `Stream`.
+    /// Stream IQ samples as a `futures_core::Stream`.
     ///
-    /// Same shape as `Self::stream_samples_tokio` (only present
-    /// when the `tokio` feature is enabled). Differs only in
-    /// which runtime drives the blocking offload.
+    /// **Misnomer note (per audit pass-2 #57):** the `_smol`
+    /// suffix and `feature = "smol"` gate reflect dependency
+    /// choice (the [`blocking`] and [`async_channel`] crates are
+    /// in the smol family), NOT a runtime requirement. The worker
+    /// runs on `blocking`'s own internal thread pool independent
+    /// of any active executor — the returned `SmolSampleStream`
+    /// can be polled from any executor (smol, async-std, tokio,
+    /// `futures::executor::block_on`). The
+    /// `Self::stream_samples_tokio` companion, by contrast, *does*
+    /// require an active tokio runtime (it uses
+    /// `tokio::task::spawn_blocking`).
+    ///
+    /// Pick this method if you don't have a tokio runtime, or if
+    /// you want the channel + worker stack to be runtime-neutral.
     ///
     /// # Errors
     ///
@@ -57,9 +68,8 @@ impl RtlSdrReader {
     ///   tokio stream on the same device) is already in flight.
     ///   The unconsumed reader is returned to the caller so it can
     ///   be retried once the existing stream drops. Per #7.
-    /// - No runtime preflight errors today —
-    ///   [`blocking::unblock`] runs on its own internal thread pool
-    ///   independent of any active executor.
+    /// - No runtime preflight errors —
+    ///   [`blocking::unblock`] doesn't require an active executor.
     ///
     /// ```no_run
     /// # #[cfg(feature = "smol")]
