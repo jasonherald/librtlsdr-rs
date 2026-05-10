@@ -550,6 +550,14 @@ impl Fc0013Tuner {
         let mut am = xdiv - (8 * pm);
 
         if am < 2 {
+            // Same pm underflow guard as FC0012; see that file's
+            // matching site for the full C-upstream-bug
+            // explanation. Per audit #14.
+            if pm == 0 {
+                return Err(RtlSdrError::Tuner(format!(
+                    "FC0013: PLL inputs out of range (xdiv={xdiv}) for {freq} Hz"
+                )));
+            }
             am += 8;
             pm -= 1;
         }
