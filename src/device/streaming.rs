@@ -17,6 +17,7 @@ use crate::reg::Block;
 use crate::usb;
 
 use super::RtlSdrDevice;
+use super::reader::ReaderBusyGuard;
 
 /// Callback type for async reading.
 /// Called with a byte slice of IQ data for each completed bulk transfer.
@@ -30,6 +31,28 @@ const BULK_ALIGNMENT: u32 = 512;
 
 /// Async read loop timeout for cancel flag polling.
 const ASYNC_POLL_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Internal bulk-read helper shared by [`RtlSdrDevice::read_sync`]
+/// and [`SampleIter::next`] (and, in `reader.rs`, also by
+/// [`super::reader::RtlSdrReader::read_sync`] / `ReaderIter::next`).
+/// Does NOT acquire the reader-busy guard — callers are responsible
+/// for that contract; this function only does the actual USB
+/// bulk-IN transfer + `NoDevice` translation.
+pub(crate) fn bulk_read(
+    handle: &rusb::DeviceHandle<rusb::GlobalContext>,
+    buf: &mut [u8],
+) -> Result<usize, RtlSdrError> {
+    let timeout = if BULK_TIMEOUT == 0 {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_millis(BULK_TIMEOUT)
+    };
+    match handle.read_bulk(crate::constants::BULK_ENDPOINT, buf, timeout) {
+        Ok(n) => Ok(n),
+        Err(rusb::Error::NoDevice) => Err(RtlSdrError::DeviceLost),
+        Err(e) => Err(e.into()),
+    }
+}
 
 impl RtlSdrDevice {
     /// Reset the USB endpoint buffer.
@@ -63,20 +86,15 @@ impl RtlSdrDevice {
     /// Synchronous (blocking) read of IQ samples.
     ///
     /// Ports `rtlsdr_read_sync`. Returns the number of bytes read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RtlSdrError::DeviceBusy`] if another bulk-read
+    /// activity (sync read, blocking iterator, async stream) is
+    /// already in flight on this device. Per #7.
     pub fn read_sync(&self, buf: &mut [u8]) -> Result<usize, RtlSdrError> {
-        let timeout = if BULK_TIMEOUT == 0 {
-            Duration::from_secs(5)
-        } else {
-            Duration::from_millis(BULK_TIMEOUT)
-        };
-        match self
-            .handle
-            .read_bulk(crate::constants::BULK_ENDPOINT, buf, timeout)
-        {
-            Ok(n) => Ok(n),
-            Err(rusb::Error::NoDevice) => Err(RtlSdrError::DeviceLost),
-            Err(e) => Err(e.into()),
-        }
+        let _guard = ReaderBusyGuard::try_acquire(std::sync::Arc::clone(&self.reader_busy))?;
+        bulk_read(&self.handle, buf)
     }
 
     /// Iterate IQ samples as a sequence of owned byte buffers.
@@ -146,9 +164,20 @@ impl RtlSdrDevice {
         } else {
             buffer_size
         };
+        // Acquire the reader-busy guard for the iterator's lifetime.
+        // On contention, store the error in `pending_error` and yield
+        // it on first `next()` (then fuse) — matches the existing
+        // fuse-on-error contract documented on `SampleIter`. Per #7.
+        let (guard, pending_error) =
+            match ReaderBusyGuard::try_acquire(std::sync::Arc::clone(&self.reader_busy)) {
+                Ok(g) => (Some(g), None),
+                Err(e) => (None, Some(e)),
+            };
         SampleIter {
             device: Some(self),
             buffer_size,
+            _guard: guard,
+            pending_error,
         }
     }
 
@@ -167,6 +196,10 @@ impl RtlSdrDevice {
         cancel_flag: &AtomicBool,
         buf_len: u32,
     ) -> Result<(), RtlSdrError> {
+        // Acquire the reader-busy flag for the entire callback loop.
+        // Released on Drop when this function returns. Per #7.
+        let _guard = ReaderBusyGuard::try_acquire(std::sync::Arc::clone(&self.reader_busy))?;
+
         let actual_buf_len = if buf_len == 0 {
             DEFAULT_BUF_LENGTH as usize
         } else if !buf_len.is_multiple_of(BULK_ALIGNMENT) || buf_len > MAX_BUF_LENGTH {
@@ -221,15 +254,34 @@ pub struct SampleIter<'a> {
     /// mutable access.
     device: Option<&'a RtlSdrDevice>,
     buffer_size: usize,
+    /// Reader-busy guard held for the iterator's lifetime. Acquired
+    /// at construction (`iter_samples`); released on Drop. `None` if
+    /// construction failed to acquire (in which case
+    /// `pending_error` carries the `DeviceBusy` to yield on first
+    /// `next()`) — also `None` after the iterator drops itself.
+    /// Per #7.
+    _guard: Option<ReaderBusyGuard>,
+    /// Construction-time guard-acquire failure to yield on the next
+    /// (= first) `next()` call. Cleared after yielding; the
+    /// iterator fuses normally afterward via `device = None`.
+    pending_error: Option<RtlSdrError>,
 }
 
 impl Iterator for SampleIter<'_> {
     type Item = Result<Vec<u8>, RtlSdrError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Yield any deferred construction error first, then fuse.
+        if let Some(e) = self.pending_error.take() {
+            self.device = None;
+            return Some(Err(e));
+        }
         let device = self.device?;
         let mut buf = vec![0u8; self.buffer_size];
-        match device.read_sync(&mut buf) {
+        // Bypass `device.read_sync` (which would re-acquire its own
+        // guard per call) — the iterator already holds the guard
+        // for its lifetime via `_guard`. Per #7.
+        match bulk_read(&device.handle, &mut buf) {
             Ok(0) => {
                 // Zero-length read — treat as end-of-stream so
                 // callers using `.take(N)` / `for ... in iter`
