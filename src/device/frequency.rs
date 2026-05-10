@@ -307,7 +307,11 @@ impl RtlSdrDevice {
                 // state (best-effort — the propagated error is more
                 // informative than any cleanup failure) and DO NOT
                 // update self.bw. Per audit slice C I-3 / #9.
-                let _ = usb::set_i2c_repeater(&self.handle, false);
+                if let Err(close_err) = usb::set_i2c_repeater(&self.handle, false) {
+                    tracing::warn!(
+                        "set_tuner_bandwidth: I2C repeater restore failed after set_bw error: {close_err}"
+                    );
+                }
                 return Err(e);
             }
         };
@@ -327,7 +331,15 @@ impl RtlSdrDevice {
             if let Ok(adjusted) = freq_minus_offset(self.freq, self.offs_freq) {
                 if let Some(tuner) = self.tuner.as_mut() {
                     if let Err(e) = tuner.set_freq(&self.handle, adjusted) {
-                        tracing::warn!("set_tuner_bandwidth: tuner retune failed: {e}");
+                        tracing::warn!(
+                            "set_tuner_bandwidth: tuner retune failed: {e}; \
+                             resetting cached freq to 0 (parity with set_sample_rate \
+                             and set_center_freq's audit-fix-#11)"
+                        );
+                        // Match the parity decision: tuner is now on
+                        // an unknown freq, so cache that uncertainty
+                        // rather than claiming the old value.
+                        self.freq = 0;
                     }
                 }
             }
