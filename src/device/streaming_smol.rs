@@ -17,6 +17,7 @@
 //! fire-and-forget shape of the tokio variant.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
@@ -24,6 +25,7 @@ use futures_core::Stream;
 use crate::error::RtlSdrError;
 
 use super::RtlSdrReader;
+use super::reader::ReaderBusyGuard;
 
 const STREAM_BACKPRESSURE_DEPTH: usize = 4;
 
@@ -38,10 +40,14 @@ impl RtlSdrReader {
     ///
     /// # Errors
     ///
-    /// Currently never fails at the preflight stage —
-    /// [`blocking::unblock`] runs on its own internal thread
-    /// pool independent of any active executor. Error type kept
-    /// as `Box<(RtlSdrError, Self)>` for shape parity.
+    /// - [`RtlSdrError::DeviceBusy`] if another bulk-read activity
+    ///   (sync read, blocking iterator, async stream — including a
+    ///   tokio stream on the same device) is already in flight.
+    ///   The unconsumed reader is returned to the caller so it can
+    ///   be retried once the existing stream drops. Per #7.
+    /// - No runtime preflight errors today —
+    ///   [`blocking::unblock`] runs on its own internal thread pool
+    ///   independent of any active executor.
     ///
     /// ```no_run
     /// # #[cfg(feature = "smol")]
@@ -62,26 +68,47 @@ impl RtlSdrReader {
         self,
         buffer_size: usize,
     ) -> Result<SmolSampleStream, Box<(RtlSdrError, Self)>> {
+        // Eagerly acquire the reader-busy guard. On contention,
+        // return the unconsumed reader so the caller can retry once
+        // the existing stream drops. The guard moves into the
+        // unblock closure below and releases on Drop when the
+        // worker returns. Per #7.
+        let guard = match ReaderBusyGuard::try_acquire(Arc::clone(&self.busy)) {
+            Ok(g) => g,
+            Err(e) => return Err(Box::new((e, self))),
+        };
+
+        let buffer_size = if buffer_size == 0 {
+            crate::constants::DEFAULT_BUF_LENGTH as usize
+        } else {
+            buffer_size
+        };
+
         let (tx, rx) = async_channel::bounded(STREAM_BACKPRESSURE_DEPTH);
 
+        // Read loop calls `bulk_read` directly rather than
+        // `iter_samples` to avoid the iterator's own re-acquire
+        // path — we already hold the guard. Per #7.
         blocking::unblock(move || {
+            let _guard = guard;
             let reader = self;
-            let mut iter = reader.iter_samples(buffer_size);
             loop {
                 if tx.is_closed() {
                     return;
                 }
-                match iter.next() {
-                    Some(chunk) => {
-                        let is_err = chunk.is_err();
-                        if tx.send_blocking(chunk).is_err() {
-                            return;
-                        }
-                        if is_err {
+                let mut buf = vec![0u8; buffer_size];
+                match super::streaming::bulk_read(&reader.handle, &mut buf) {
+                    Ok(0) => return, // fuse on zero-length read
+                    Ok(n) => {
+                        buf.truncate(n);
+                        if tx.send_blocking(Ok(buf)).is_err() {
                             return;
                         }
                     }
-                    None => return,
+                    Err(e) => {
+                        let _ = tx.send_blocking(Err(e));
+                        return;
+                    }
                 }
             }
         })

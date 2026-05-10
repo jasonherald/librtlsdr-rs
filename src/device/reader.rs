@@ -4,11 +4,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use crate::error::RtlSdrError;
-
-use super::RtlSdrDevice;
 
 /// RAII guard for the per-device reader-busy flag. Acquiring sets
 /// the flag to `true` via `compare_exchange`; dropping clears it.
@@ -135,22 +132,10 @@ pub struct RtlSdrReader {
     /// [`ReaderBusyGuard::try_acquire`] at the top of every
     /// bulk-read entry point on this reader to enforce single-active-
     /// reader. Per #7.
-    //
-    // `dead_code` allow lifts in the next commit, when the bulk-read
-    // entry points start calling `ReaderBusyGuard::try_acquire(&self.busy)`.
-    #[allow(dead_code)]
     pub(crate) busy: Arc<AtomicBool>,
 }
 
 impl RtlSdrReader {
-    /// Default per-read USB transfer timeout used by sync reads.
-    /// Matches [`RtlSdrDevice::read_sync`]'s timeout for symmetry.
-    /// Per-call control: the per-runtime stream variants use a
-    /// shorter polling timeout for cancellation responsiveness;
-    /// the synchronous iterator uses this longer timeout because
-    /// it has no async cancellation pathway.
-    const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
-
     /// Synchronous bulk read into a caller-owned buffer.
     ///
     /// Mirror of [`RtlSdrDevice::read_sync`] with the same
@@ -162,17 +147,14 @@ impl RtlSdrReader {
     ///
     /// - [`RtlSdrError::DeviceLost`] if the dongle was
     ///   disconnected.
+    /// - [`RtlSdrError::DeviceBusy`] if another bulk-read activity
+    ///   (sync read, blocking iterator, async stream) is already
+    ///   in flight on this device. Per #7.
     /// - [`RtlSdrError::Usb`] for any other rusb transport
     ///   error.
     pub fn read_sync(&self, buf: &mut [u8]) -> Result<usize, RtlSdrError> {
-        match self
-            .handle
-            .read_bulk(RtlSdrDevice::BULK_ENDPOINT, buf, Self::DEFAULT_TIMEOUT)
-        {
-            Ok(n) => Ok(n),
-            Err(rusb::Error::NoDevice) => Err(RtlSdrError::DeviceLost),
-            Err(e) => Err(e.into()),
-        }
+        let _guard = ReaderBusyGuard::try_acquire(Arc::clone(&self.busy))?;
+        super::streaming::bulk_read(&self.handle, buf)
     }
 
     /// Sync iterator over IQ-sample buffers, consuming the
@@ -200,9 +182,20 @@ impl RtlSdrReader {
         } else {
             buffer_size
         };
+        // Acquire the reader-busy guard for the iterator's lifetime.
+        // On contention, `pending_error` carries the `DeviceBusy`
+        // to yield on first `next()` (then fuse) — matches the
+        // existing fuse-on-error contract documented on
+        // `ReaderIter`. Per #7.
+        let (guard, pending_error) = match ReaderBusyGuard::try_acquire(Arc::clone(&self.busy)) {
+            Ok(g) => (Some(g), None),
+            Err(e) => (None, Some(e)),
+        };
         ReaderIter {
             reader: Some(self),
             buffer_size,
+            _guard: guard,
+            pending_error,
         }
     }
 }
@@ -220,15 +213,34 @@ pub struct ReaderIter {
     /// `None` once the iterator has fused.
     reader: Option<RtlSdrReader>,
     buffer_size: usize,
+    /// Reader-busy guard held for the iterator's lifetime. Acquired
+    /// at construction (`iter_samples`); released on Drop. `None` if
+    /// construction failed to acquire (in which case
+    /// `pending_error` carries the `DeviceBusy` to yield on first
+    /// `next()`) — also `None` after the iterator drops itself.
+    /// Per #7.
+    _guard: Option<ReaderBusyGuard>,
+    /// Construction-time guard-acquire failure to yield on the next
+    /// (= first) `next()` call. Cleared after yielding; the
+    /// iterator fuses normally afterward via `reader = None`.
+    pending_error: Option<RtlSdrError>,
 }
 
 impl Iterator for ReaderIter {
     type Item = Result<Vec<u8>, RtlSdrError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Yield any deferred construction error first, then fuse.
+        if let Some(e) = self.pending_error.take() {
+            self.reader = None;
+            return Some(Err(e));
+        }
         let reader = self.reader.as_ref()?;
         let mut buf = vec![0u8; self.buffer_size];
-        match reader.read_sync(&mut buf) {
+        // Bypass `reader.read_sync` (which would re-acquire its own
+        // guard per call) — the iterator already holds the guard
+        // for its lifetime via `_guard`. Per #7.
+        match super::streaming::bulk_read(&reader.handle, &mut buf) {
             Ok(0) => {
                 self.reader = None;
                 None
