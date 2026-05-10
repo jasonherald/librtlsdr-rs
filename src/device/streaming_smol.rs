@@ -82,7 +82,11 @@ impl RtlSdrReader {
     /// dev.reset_buffer()?;
     /// let reader = dev.reader();
     /// let stream = reader.stream_samples_smol(262_144).map_err(|boxed| boxed.0)?;
-    /// let mut stream: Pin<Box<dyn Stream<Item = _>>> = Box::pin(stream);
+    /// // Item type spelled out so the snippet is copy-paste-friendly
+    /// // outside of the `?`-able context that gives the `_` enough
+    /// // inference signal here.
+    /// let mut stream: Pin<Box<dyn Stream<Item = Result<Vec<u8>, librtlsdr_rs::RtlSdrError>>>> =
+    ///     Box::pin(stream);
     /// # Ok(())
     /// # }
     /// ```
