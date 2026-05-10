@@ -66,7 +66,13 @@ pub enum TunerType {
     Fc0013,
     /// Fitipower FC2580.
     Fc2580,
-    /// Rafael Micro R820T.
+    /// Rafael Micro R820T family — covers R820T, R820T2, and the
+    /// pin-compatible silicon revisions sold by RTL-SDR Blog
+    /// dongles. The variant intentionally drops the `2` suffix
+    /// because the IC's I2C protocol, register layout, and gain
+    /// table are bit-identical across the rev range — see
+    /// `R82XX_GAINS` (29 steps shared between R820T / R820T2 /
+    /// R828D's R-tuner front-end).
     R820T,
     /// Rafael Micro R828D.
     R828D,
@@ -74,6 +80,7 @@ pub enum TunerType {
 
 impl TunerType {
     /// Get the gain table for this tuner type (in tenths of dB).
+    #[must_use]
     pub fn gains(&self) -> &'static [i32] {
         use crate::constants::*;
         match self {

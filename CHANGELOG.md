@@ -5,6 +5,59 @@ All notable changes to `librtlsdr-rs` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-05-10
+
+Third wave of audit pass-2 follow-up — closes the four
+non-breaking API-ergonomics findings ([#50] [#52] [#53] [#54]).
+Strict patch release: doc fixes + `#[must_use]` additions, no
+behavior change.
+
+[#51] (`Block` / `TunerType` `#[non_exhaustive]`) is intentionally
+deferred — it requires a semver-major bump and another downstream
+migration round on the heels of 0.2.0. Will fold into a future
+0.3.0 bundle alongside any other breaking findings.
+
+### Added
+
+- **`#[must_use]` on remaining pure getters and free
+  functions** ([#50]). The 0.1.2 #19 polish wave covered most
+  getters; this fills the gaps: `RtlSdrDevice::is_blog_v4`,
+  `RtlSdrDevice::check_dongle_model`, `TunerType::gains`,
+  `enumerate::get_device_count`, `enumerate::get_device_name`.
+  Discarding any of these is always a bug — they have no side
+  effects.
+
+### Documentation
+
+- **`closest_gain` example clarifies the lookup is pure**
+  ([#53]). Pre-#53 the example called
+  `set_tuner_gain_mode(true)?` BEFORE `closest_gain(150)`,
+  implying gain mode affects what `closest_gain` returns. It
+  doesn't — `closest_gain` is a pure static-table lookup over
+  `TunerType::gains`. Reordered the example so manual mode is
+  enabled just before `set_tuner_gain` (where it actually
+  matters), and clarified the surrounding prose.
+- **Builder `# Errors` split by selector path** ([#52]).
+  Pre-#52 doc claimed `DeviceNotFound` covered "out of range
+  OR no devices plugged in" — but `get_index_by_serial`
+  (#6 / 0.1.1 fix) returns `InvalidParameter` unconditionally
+  on the serial path, even when enumerate sees zero devices.
+  Rewrote the section to split by selector path so the
+  shapes don't surprise.
+- **`TunerType::R820T` covers R820T2 / silicon revisions**
+  ([#54]). Crate root and `closest_gain` doc both reference
+  R820T2 (29 steps), but the enum variant is `R820T` — the
+  `2` suffix was intentionally dropped because the IC's I2C
+  protocol, register layout, and gain table are bit-identical
+  across the rev range. Added a doc note on the variant
+  explaining the naming.
+
+[#50]: https://github.com/jasonherald/librtlsdr-rs/issues/50
+[#51]: https://github.com/jasonherald/librtlsdr-rs/issues/51
+[#52]: https://github.com/jasonherald/librtlsdr-rs/issues/52
+[#53]: https://github.com/jasonherald/librtlsdr-rs/issues/53
+[#54]: https://github.com/jasonherald/librtlsdr-rs/issues/54
+
 ## [0.2.2] - 2026-05-10
 
 Second wave of audit pass-2 follow-up — closes the seven Tier-2
