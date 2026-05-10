@@ -679,18 +679,23 @@ impl Fc2580Tuner {
         let n_val = (f_vco / 2) / f_comp;
 
         let f_diff = f_vco - 2 * f_comp * n_val;
-        // Widen to u64 for the `<< PLL_K_SHIFT` (16) step:
-        // `f_diff < 2 * f_comp ≤ 2 * freq_xtal_khz`, so the shift
-        // overflows u32 once `2 * freq_xtal_khz > 2^16 = 65_536`,
-        // i.e. xtal > 32.768 MHz. Standard RTL2832U xtals are
-        // 28.8 MHz so this doesn't fire today, but the C upstream
-        // operates in `int` (32-bit) with the same latent bug.
-        // Per audit pass-2 #49.
-        let f_diff_shifted: u64 = u64::from(f_diff) << PLL_K_SHIFT;
-        let f_comp_shifted: u64 = (2 * u64::from(f_comp)) >> PLL_PRE_SHIFT_BITS;
-        let mut k_val: u64 = f_diff_shifted / f_comp_shifted;
+        // Widen to u64 and combine the K-shift with the
+        // pre-shift so we divide by `2 * f_comp` directly,
+        // avoiding two latent bugs in the C-faithful version:
+        // - `f_diff << PLL_K_SHIFT` (16) overflowed u32 for
+        //   xtal > 32.768 MHz (#49).
+        // - `(2 * f_comp) >> PLL_PRE_SHIFT_BITS` (4) bottomed
+        //   out to 0 for `f_comp ∈ 1..=7`, dividing by zero in
+        //   the next step (CodeRabbit on #80, beyond #48).
+        // The combined-shift form is mathematically equivalent
+        // for the in-spec range but safe-by-construction
+        // outside it: `denominator = 2 * f_comp` is only zero
+        // when `f_comp == 0`, which is already guarded above.
+        let numerator: u64 = u64::from(f_diff) << (PLL_K_SHIFT + PLL_PRE_SHIFT_BITS);
+        let denominator: u64 = 2 * u64::from(f_comp);
+        let mut k_val: u64 = numerator / denominator;
 
-        if f_diff_shifted - k_val * f_comp_shifted >= (u64::from(f_comp) >> PLL_PRE_SHIFT_BITS) {
+        if numerator - k_val * denominator >= u64::from(f_comp) {
             k_val += 1;
         }
 

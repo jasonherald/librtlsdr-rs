@@ -16,7 +16,11 @@ impl RtlSdrDevice {
         if let Some(tuner) = &mut self.tuner {
             usb::set_i2c_repeater(&self.handle, true)?;
             let result = tuner.set_gain(&self.handle, gain);
-            usb::set_i2c_repeater(&self.handle, false)?;
+            // Capture the close result without `?` so a transient
+            // close failure doesn't suppress the cache update for
+            // a `set_gain` that already succeeded against the
+            // hardware. CodeRabbit on PR #80.
+            let close_result = usb::set_i2c_repeater(&self.handle, false);
 
             if result.is_ok() {
                 self.gain = gain;
@@ -31,6 +35,12 @@ impl RtlSdrDevice {
             // the last *successful* setting, matching the
             // contract `tuner_gain()` documents. Per audit
             // pass-2 #46.
+
+            // Propagate either error (close error first since
+            // the underlying I2C-repeater state is "off" is the
+            // invariant the next call assumes; a leaked `true`
+            // is the more dangerous condition).
+            close_result?;
             result
         } else {
             Ok(())

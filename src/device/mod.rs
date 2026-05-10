@@ -610,7 +610,18 @@ impl RtlSdrDevice {
             }
         }
 
-        if self.tun_xtal != tuner_freq {
+        // Compare against the *effective* new value, not the
+        // raw `0` sentinel. CodeRabbit on PR #80: pre-fix,
+        // `set_xtal_freq(0, 0)` on a device where `tun_xtal`
+        // already tracked `rtl_xtal` (the typical case after
+        // `open()`) would still trigger a retune even though
+        // the effective value didn't change.
+        let new_tun_xtal = if tuner_freq == 0 {
+            self.rtl_xtal
+        } else {
+            tuner_freq
+        };
+        if self.tun_xtal != new_tun_xtal {
             // Same rollback shape for the tuner-side state.
             // We mutate three things before the fallible
             // `set_center_freq`: `self.tun_xtal`, the tuner
@@ -620,11 +631,7 @@ impl RtlSdrDevice {
             // pass-2 #44 + #39.
             let old_tun_xtal = self.tun_xtal;
             let old_corrected_xtal = self.get_tuner_xtal();
-            self.tun_xtal = if tuner_freq == 0 {
-                self.rtl_xtal
-            } else {
-                tuner_freq
-            };
+            self.tun_xtal = new_tun_xtal;
 
             // Push the new (PPM-corrected) tuner xtal into the
             // backend's PLL state. C upstream does this in
