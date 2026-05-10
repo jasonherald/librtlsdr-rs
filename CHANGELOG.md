@@ -5,6 +5,173 @@ All notable changes to `librtlsdr-rs` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-05-10
+
+Second wave of audit follow-up — closes Tier 3 through Tier 6
+of the May 2026 codebase audit (#12 through #21) plus a new UX
+issue (#31) discovered during the live-test runs. Strict patch
+release: pure additive surface, no public API removed or
+reshaped. **15 of 17 audit issues now closed; only #16
+(deferred semver-major error-type bundle) remains by design.**
+
+### Added
+
+- **`RtlSdrError` is now `Clone + PartialEq + Eq`** ([#15]) —
+  consumers can stash the last error in
+  `Arc<Mutex<Option<RtlSdrError>>>`, snapshot it across UI
+  re-render cycles, or assert equality in tests without
+  resorting to `format!("{e}")` substring matching. Verified
+  against `rusb::Error` 0.9.4 (already `Copy + Clone + Eq +
+  PartialEq`).
+- **`RtlSdrError::is_disconnected()` / `is_timeout()`** helper
+  methods ([#15]) — common SDR retry/reconnect pattern shouldn't
+  require pulling `rusb` into the consumer's `Cargo.toml` just
+  to pattern-match transport variants.
+- **`pub use rusb`** at the crate root ([#15]) — consumers
+  pattern-matching on less-common `rusb::Error` variants (`Io`,
+  `Pipe`, `Overflow`, etc.) can now `use librtlsdr_rs::rusb;`
+  without risking a Cargo resolver dep-version mismatch.
+- **`RtlSdrDevice::try_closest_gain`** returning `Option<i32>`
+  ([#15]) — disambiguates "no gain table available" from "the
+  closest step happens to be 0" that `closest_gain` overloads.
+- **Manual `Debug` impl for `RtlSdrDevice`** ([#19]) — consumers
+  can `dbg!(&device)` or include the device in
+  `#[derive(Debug)]` parent structs. Skips the non-Debug
+  `handle` (substituted with `Arc::as_ptr`) and `tuner` fields
+  (substituted with `tuner_present: bool` alongside the existing
+  `tuner_type`).
+- **`#[must_use]` on 12 public pure-getter methods** ([#19]):
+  `tuner_type`, `tuner_gains`, `manufacturer`, `product`,
+  `serial`, `center_freq`, `sample_rate`, `freq_correction`,
+  `tuner_gain`, `direct_sampling`, `offset_tuning`, `xtal_freq`.
+- **`tuner_gains` returns `&'static [i32]`** ([#19]) instead of
+  borrowing self — strictly more permissive; callers can stash
+  the slice across the device's lifetime.
+- **Three new live-hardware tokio tests** ([#21]):
+  `tokio_stream_drains_30_seconds` (sustained-throughput
+  smoke), `tokio_stream_drop_while_blocking_send` (drop while
+  worker is parked in `blocking_send` because the channel is
+  full), and a strengthened
+  `dropping_stream_stops_worker` (now drops device + re-opens
+  with bounded retry to verify the worker fully released the
+  USB interface claim).
+- **Three new live-hardware smol tests** ([#13]) — mirror of the
+  three primary tokio Stream scenarios (smoke, parent-retunes-
+  during-stream, dropping-stream-stops-worker). `smol = "2"`
+  added to `[dev-dependencies]` for `smol::block_on` /
+  `smol::Timer`. Production `smol` feature unchanged.
+- **`MAX_CONSECUTIVE_ZERO_READS` fuse** in
+  `RtlSdrDevice::read_async_blocking` ([#12]) — after 100
+  consecutive `Ok(0)` reads (~100 s at the 1 s
+  `ASYNC_POLL_TIMEOUT`), log a `tracing::warn!` and return
+  `Ok(())` cleanly. Brings the callback path's "stuck device"
+  semantics into rough parity with `iter_samples`'s defensive
+  `Ok(0)` fuse (was inherited from upstream C's spin-forever).
+- **CI matrix: macOS + Windows + MSRV jobs** ([#17]) —
+  `cross-platform` matrix job builds + lib-tests + doctests on
+  `macos-latest` (`brew install libusb pkg-config`) and
+  `windows-latest` (`vcpkg install libusb:x64-windows-static-md`,
+  `VCPKGRS_DYNAMIC=0`). `msrv` job pins `dtolnay/rust-toolchain@1.95.0`
+  so a 1.96-only feature can't silently land green and break
+  consumers on the declared MSRV. README's cross-platform
+  claim now actually validated.
+- **Static-assertion tightening** ([#20]) — `static_assertions`
+  added as a dev-dep. `assert_not_impl_any!(SampleIter<'static>:
+  Send)` pins the !Send contract of the borrowed iterator;
+  `<TokioSampleStream as Stream>::Item: Send` and same for Smol
+  pin a future non-Send `RtlSdrError` variant addition (#16) as
+  a compile-time failure rather than consumer-code surprise.
+
+### Fixed
+
+- **R82xx `sysfreq_sel` predetect dead-flag** ([#14]) — the
+  `use_predetect` config flag's conditional set is followed
+  unconditionally by the digital-TV "PRE_DECT off" clear, so
+  the flag has no observable effect today (verified faithful to
+  C upstream `tuner_r82xx.c`). Documented with a comment naming
+  the dead flag and the gate that would have to be removed for
+  it to actually matter.
+- **FC0012 / FC0013 PLL `pm` underflow** ([#14]) — the
+  `if am < 2 { pm -= 1 }` block could underflow `pm` to 65535
+  on pathological `xdiv` (debug panic, release wrap matching C's
+  `uint8_t` wrap which then silently passes downstream
+  validation). Now returns `RtlSdrError::Tuner` with the bad
+  `xdiv` and freq named. Backends are latent (not wired up in
+  `probe_tuner`); fix lands before any future wire-up.
+- **E4K `set_lna_gain` exact-match fragility** ([#14]) — was
+  `-EINVAL` on no exact match against `LNA_GAIN`; now snaps to
+  nearest like `closest_arr_idx` does for filters. Deliberate
+  divergence from C upstream; latent because E4K isn't wired
+  up.
+- **`STREAM_BACKPRESSURE_DEPTH` was duplicated** in
+  `streaming_tokio.rs` and `streaming_smol.rs` ([#12]) — hoisted
+  to a single `pub(crate) const` in `constants.rs`. The
+  back-pressure-math comment was also rewritten (the original
+  chained "4 × 256 KB ≈ 1 MB ≈ 250 ms ... = 4 MB/s"
+  resolved to 1 s, not 250 ms).
+
+### Documentation
+
+- **Tier 5 faithful-port foot-gun docs** ([#18]) — five sites
+  the Rust port faithfully copies from C upstream that aren't
+  obvious to a Rust reader: `set_testmode` / `set_agc_mode`
+  shared-register interaction (sequence
+  `set_agc_mode(true) → set_testmode(true) → set_testmode(false)`
+  silently turns AGC off), `set_xtal_freq` `0`-sentinel,
+  `init_baseband` redundant 0x16/0x17 clear, `tracing::warn!`
+  on `enumerate.rs::get_device_count` /
+  `get_device_name` failures (was silently treated as "no
+  devices"), `tracing::info!` on one-shot state-change methods
+  (`set_freq_correction`, `set_tuner_gain_mode`,
+  `set_offset_tuning`, `set_agc_mode`, `set_testmode`,
+  `set_bias_tee_gpio`, `set_xtal_freq`).
+- **Tuner trait clarification** ([#14]) — `Tuner::set_bw`
+  return-value convention documented (only R82xx returns a
+  meaningful IF; `0` from non-R82xx means "no IF change
+  required"). `RtlSdrDevice` doc said `Box<dyn Tuner + Send>`;
+  type is `Box<dyn Tuner>` (the `+ Send` is implicit via the
+  trait's `Send` supertrait).
+- **README `--test-threads=1` requirement for live tests**
+  ([#31], discovered during PR #30's hardware run) — `cargo
+  test`'s default parallel runner has multiple threads each call
+  `RtlSdrDevice::open(0)` and only one wins; the rest silently
+  skip via "Resource busy." Suite reports `5 passed` with only
+  1 actually exercising hardware. README updated; `open_or_skip`
+  prints a louder diagnostic naming `--test-threads=1` when it
+  detects `rusb::Error::Busy`.
+- **Streaming layer docs** ([#20]) — `iter_samples` allocation
+  cost note now mentions small-buffer scaling (~7800 allocs/sec
+  at 512 B vs ~15 allocs/sec at 256 KB); new
+  `# Cancellation latency` section on `read_async_blocking`;
+  inline rationale for `Ordering::Relaxed` on the cancel-flag
+  load. `usb_handle()` concurrency-hazard note was already
+  added in 0.1.1's #7 work.
+
+### Internal
+
+- **CI: dropped duplicate `cargo-deny` job** ([#17]) — the inline
+  job in `ci.yml` was running identically to `deny.yml`'s.
+- **CI: dropped unneeded `apt install libusb` in `audit.yml`**
+  ([#17]) — `cargo audit` only reads `Cargo.lock`.
+- **CI: pinned `cargo-deny`'s `command: check all`** ([#17]) so
+  a future upstream default change can't silently shrink
+  supply-chain coverage.
+- **Streaming layer dedup** ([#12]) — single `pub(crate) fn
+  bulk_read(handle, buf)` was already extracted in 0.1.1's #7
+  work (busy-flag PR); this release just hoists the
+  `STREAM_BACKPRESSURE_DEPTH` constant alongside.
+
+[#12]: https://github.com/jasonherald/librtlsdr-rs/issues/12
+[#13]: https://github.com/jasonherald/librtlsdr-rs/issues/13
+[#14]: https://github.com/jasonherald/librtlsdr-rs/issues/14
+[#15]: https://github.com/jasonherald/librtlsdr-rs/issues/15
+[#17]: https://github.com/jasonherald/librtlsdr-rs/issues/17
+[#18]: https://github.com/jasonherald/librtlsdr-rs/issues/18
+[#19]: https://github.com/jasonherald/librtlsdr-rs/issues/19
+[#20]: https://github.com/jasonherald/librtlsdr-rs/issues/20
+[#21]: https://github.com/jasonherald/librtlsdr-rs/issues/21
+[#31]: https://github.com/jasonherald/librtlsdr-rs/issues/31
+
 ## [0.1.1] - 2026-05-10
 
 Audit-driven correctness pass. Seven issues from the May 2026
