@@ -572,27 +572,44 @@ impl RtlSdrDevice {
 
 impl Drop for RtlSdrDevice {
     fn drop(&mut self) {
+        // Drop-time errors aren't actionable (we can't return them
+        // to the caller, and panicking from Drop is undefined
+        // behavior under unwinding). Log at `tracing::debug!` so a
+        // post-mortem inspection has at least *something* to go on
+        // when cleanup misbehaves. Per audit slice A M-7 / #9.
         if !self.dev_lost {
             // Wait for async to complete
             // (in practice async is handled by the caller stopping first)
 
             // Deinit tuner
             if let Some(tuner) = &mut self.tuner {
-                let _ = usb::set_i2c_repeater(&self.handle, true);
-                let _ = tuner.exit(&self.handle);
-                let _ = usb::set_i2c_repeater(&self.handle, false);
+                if let Err(e) = usb::set_i2c_repeater(&self.handle, true) {
+                    tracing::debug!("RtlSdrDevice::drop: set_i2c_repeater(true) failed: {e}");
+                }
+                if let Err(e) = tuner.exit(&self.handle) {
+                    tracing::debug!("RtlSdrDevice::drop: tuner.exit failed: {e}");
+                }
+                if let Err(e) = usb::set_i2c_repeater(&self.handle, false) {
+                    tracing::debug!("RtlSdrDevice::drop: set_i2c_repeater(false) failed: {e}");
+                }
             }
 
             // Power off demod
-            let _ = usb::deinit_baseband(&self.handle);
+            if let Err(e) = usb::deinit_baseband(&self.handle) {
+                tracing::debug!("RtlSdrDevice::drop: deinit_baseband failed: {e}");
+            }
         }
 
         // Release interface
-        let _ = self.handle.release_interface(0);
+        if let Err(e) = self.handle.release_interface(0) {
+            tracing::debug!("RtlSdrDevice::drop: release_interface failed: {e}");
+        }
 
         // Reattach kernel driver if we detached it
         if self.driver_active {
-            let _ = self.handle.attach_kernel_driver(0);
+            if let Err(e) = self.handle.attach_kernel_driver(0) {
+                tracing::debug!("RtlSdrDevice::drop: attach_kernel_driver failed: {e}");
+            }
         }
     }
 }

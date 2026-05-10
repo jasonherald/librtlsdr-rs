@@ -59,26 +59,47 @@ impl RtlSdrDevice {
 
         self.rate = real_rate;
 
-        // Set tuner bandwidth and update IF frequency
+        // Set tuner bandwidth and update IF frequency.
+        //
+        // All three inner failures (set_bw, set_if_freq, retune) are
+        // best-effort — a sample-rate change has already partially
+        // applied to the demod side by the time we reach the demod
+        // register writes below, so propagating an Err here would
+        // leave the device half-configured AND fail to complete the
+        // demod-side updates. Pre-#9 these were silent; post-#9
+        // they're logged at `tracing::warn!` for visibility while
+        // preserving the best-effort propagation shape. Per audit
+        // slice C I-4 / #9.
         if let Some(tuner) = &mut self.tuner {
             usb::set_i2c_repeater(&self.handle, true)?;
             let bw = if self.bw > 0 { self.bw } else { self.rate };
-            if let Ok(if_freq) = tuner.set_bw(&self.handle, bw, self.rate) {
-                // Update IF frequency registers (critical — audit fix #2)
-                let _ = self.set_if_freq(if_freq);
-                // Retune to apply new IF (audit fix #2). Skip the
-                // tuner call entirely when freq < offs_freq —
-                // pre-#10 the panic-shape `self.freq - self.offs_freq`
-                // would crash debug builds and silently wrap in
-                // release. Audit issue #9 will add tracing on the
-                // swallowed errors here; for now preserve the
-                // existing best-effort shape.
-                if self.freq > 0 {
-                    if let Some(tuner) = &mut self.tuner {
+            match tuner.set_bw(&self.handle, bw, self.rate) {
+                Ok(if_freq) => {
+                    if let Err(e) = self.set_if_freq(if_freq) {
+                        tracing::warn!("set_sample_rate: IF freq update failed: {e}");
+                    }
+                    if self.freq > 0 {
                         if let Ok(adjusted) = freq_minus_offset(self.freq, self.offs_freq) {
-                            let _ = tuner.set_freq(&self.handle, adjusted);
+                            if let Some(tuner) = &mut self.tuner {
+                                if let Err(e) = tuner.set_freq(&self.handle, adjusted) {
+                                    tracing::warn!(
+                                        "set_sample_rate: tuner retune failed: {e}; \
+                                         resetting cached freq to 0 (parity with \
+                                         set_center_freq's audit-fix-#11)"
+                                    );
+                                    // Match set_center_freq's audit-fix-#11
+                                    // pattern: tuner is now on an unknown freq,
+                                    // so cache that uncertainty rather than
+                                    // claiming the old value. Per audit slice
+                                    // C I-5 / #9.
+                                    self.freq = 0;
+                                }
+                            }
                         }
                     }
+                }
+                Err(e) => {
+                    tracing::warn!("set_sample_rate: tuner set_bw failed: {e}");
                 }
             }
             usb::set_i2c_repeater(&self.handle, false)?;
@@ -233,7 +254,12 @@ impl RtlSdrDevice {
             } else {
                 self.rate
             };
-            let _ = tuner.set_bw(&self.handle, bw, self.rate);
+            // Best-effort: the BW update is secondary to the IF
+            // change above. Log on failure rather than silently
+            // swallowing. Per audit slice C I-4 / #9.
+            if let Err(e) = tuner.set_bw(&self.handle, bw, self.rate) {
+                tracing::warn!("set_offset_tuning: tuner set_bw failed: {e}");
+            }
             usb::set_i2c_repeater(&self.handle, false)?;
         }
 
@@ -247,26 +273,80 @@ impl RtlSdrDevice {
     /// Set tuner bandwidth in Hz.
     ///
     /// Ports `rtlsdr_set_tuner_bandwidth`.
+    ///
+    /// # Errors
+    ///
+    /// - The tuner's `set_bw` error if the IC rejects the
+    ///   bandwidth. The cached bandwidth is **not** updated on
+    ///   failure (so subsequent reads never lie about a setting
+    ///   the hardware never accepted). Per audit slice C I-3 / #9.
+    /// - Any [`RtlSdrError::Usb`] propagated from the I2C-repeater
+    ///   toggling.
+    ///
+    /// Best-effort failures of the secondary IF-frequency update
+    /// and tuner-retune are logged at `tracing::warn!` but don't
+    /// invalidate the bandwidth setting itself — the bandwidth is
+    /// the primary side effect this method is named for.
     pub fn set_tuner_bandwidth(&mut self, bw: u32) -> Result<(), RtlSdrError> {
-        if let Some(tuner) = &mut self.tuner {
-            usb::set_i2c_repeater(&self.handle, true)?;
-            let actual_bw = if bw > 0 { bw } else { self.rate };
-            if let Ok(if_freq) = tuner.set_bw(&self.handle, actual_bw, self.rate) {
-                let _ = self.set_if_freq(if_freq);
-                // Skip tuner retune when freq < offs_freq — same
-                // pre-#10 panic-shape concern as `set_sample_rate`.
-                // Audit issue #9 covers the swallowed-error tracing.
-                if self.freq > 0 {
-                    if let Some(tuner) = &mut self.tuner {
-                        if let Ok(adjusted) = freq_minus_offset(self.freq, self.offs_freq) {
-                            let _ = tuner.set_freq(&self.handle, adjusted);
-                        }
+        let actual_bw = if bw > 0 { bw } else { self.rate };
+        let rate = self.rate;
+
+        // No tuner attached → no-op (matches existing behavior).
+        let Some(tuner) = self.tuner.as_mut() else {
+            return Ok(());
+        };
+
+        usb::set_i2c_repeater(&self.handle, true)?;
+        let bw_result = tuner.set_bw(&self.handle, actual_bw, rate);
+        // tuner borrow released after the expression above.
+
+        let if_freq = match bw_result {
+            Ok(f) => f,
+            Err(e) => {
+                // Tuner rejected the bandwidth. Restore I2C-repeater
+                // state (best-effort — the propagated error is more
+                // informative than any cleanup failure) and DO NOT
+                // update self.bw. Per audit slice C I-3 / #9.
+                if let Err(close_err) = usb::set_i2c_repeater(&self.handle, false) {
+                    tracing::warn!(
+                        "set_tuner_bandwidth: I2C repeater restore failed after set_bw error: {close_err}"
+                    );
+                }
+                return Err(e);
+            }
+        };
+
+        // Best-effort: update IF-frequency demod registers. A failure
+        // here doesn't invalidate the BW setting — log + continue.
+        if let Err(e) = self.set_if_freq(if_freq) {
+            tracing::warn!("set_tuner_bandwidth: IF freq update failed: {e}");
+        }
+
+        // Best-effort: retune the tuner to apply the new IF. Skip
+        // when below the offset-tuning floor (pre-#10 panic-shape;
+        // freq_minus_offset returns Err which we swallow silently
+        // here since it's an explicit "not applicable" signal, not
+        // a transport failure).
+        if self.freq > 0 {
+            if let Ok(adjusted) = freq_minus_offset(self.freq, self.offs_freq) {
+                if let Some(tuner) = self.tuner.as_mut() {
+                    if let Err(e) = tuner.set_freq(&self.handle, adjusted) {
+                        tracing::warn!(
+                            "set_tuner_bandwidth: tuner retune failed: {e}; \
+                             resetting cached freq to 0 (parity with set_sample_rate \
+                             and set_center_freq's audit-fix-#11)"
+                        );
+                        // Match the parity decision: tuner is now on
+                        // an unknown freq, so cache that uncertainty
+                        // rather than claiming the old value.
+                        self.freq = 0;
                     }
                 }
             }
-            usb::set_i2c_repeater(&self.handle, false)?;
-            self.bw = bw;
         }
+
+        usb::set_i2c_repeater(&self.handle, false)?;
+        self.bw = bw;
         Ok(())
     }
 }
