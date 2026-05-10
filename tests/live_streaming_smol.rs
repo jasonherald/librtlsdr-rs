@@ -158,15 +158,22 @@ fn smol_parent_can_retune_during_stream() {
     assert!(!buf.is_empty(), "post-retune buffer was empty");
 }
 
-/// Mirror of `dropping_stream_stops_worker`: drop the smol stream
-/// and confirm the worker exits without deadlocking the test.
+/// Mirror of `dropping_stream_stops_worker`: drop the smol
+/// stream and confirm the worker exits + releases the USB
+/// interface claim.
 ///
-/// `blocking::unblock` returns a `Task` we `.detach()` in the
-/// stream constructor — the worker should observe the
-/// `async_channel::Sender::is_closed()` between reads and exit.
-/// Mid-read drops still wait for the in-flight bulk transfer to
-/// return (~5 s worst case on a stalled device, documented on
-/// `stream_samples_smol`).
+/// Uses the same bounded re-open verification the tokio sibling
+/// adopted in #21 round 2 — we drop the parent `dev` (releases
+/// our Arc<DeviceHandle>) and then poll `RtlSdrDevice::open(0)`
+/// until it succeeds. If the worker never observed the channel
+/// close (or `blocking::unblock`'s detached Task is leaked),
+/// we'd be stuck holding the interface and the re-open would
+/// fail with `Busy` indefinitely.
+///
+/// 6-second deadline accounts for one bulk-read cycle the
+/// worker may still be parked in (`BULK_TIMEOUT == 0` selects
+/// the streaming-friendly 5 s default — see #47) plus jitter.
+/// Per audit pass-2 #56.
 #[test]
 #[ignore = "needs real RTL-SDR hardware — run with --ignored"]
 fn smol_dropping_stream_stops_worker() {
@@ -176,13 +183,12 @@ fn smol_dropping_stream_stops_worker() {
         return;
     };
 
-    let reader = dev.reader();
-    let stream = reader
-        .stream_samples_smol(0)
-        .map_err(|boxed| boxed.0)
-        .expect("stream_samples_smol should succeed on a free device");
-
     smol::block_on(async move {
+        let reader = dev.reader();
+        let stream = reader
+            .stream_samples_smol(0)
+            .map_err(|boxed| boxed.0)
+            .expect("stream_samples_smol should succeed on a free device");
         let mut stream = Box::pin(stream);
 
         // Drain one buffer.
@@ -192,17 +198,35 @@ fn smol_dropping_stream_stops_worker() {
             .expect("stream ended early")
             .expect("read failed");
 
-        // Drop the stream. The worker's
-        // `tx.is_closed()` check between reads + the
-        // `send_blocking` failure after each read cooperate to
-        // exit the worker on the happy path.
+        // Drop the stream — closes the channel. The worker's
+        // `send_blocking` (load-bearing per #61) fails on the
+        // next iteration and the detached `blocking::unblock`
+        // Task exits, releasing the inner Arc<DeviceHandle>.
         drop(stream);
 
-        // Give the worker a moment to observe the drop.
-        // We can't directly observe the worker exiting (the
-        // detached Task handle was discarded inside
-        // stream_samples_smol); the test confirms the smol
-        // executor doesn't deadlock.
-        smol::Timer::after(Duration::from_millis(500)).await;
+        // Drop the parent device too so the only remaining
+        // Arc<DeviceHandle> reference is the worker's; once it
+        // exits, the handle drops and the USB interface is
+        // released for re-open.
+        drop(dev);
+
+        // Bounded re-open verification (mirror of the tokio
+        // sibling's #21 round-2 pattern). 6 s deadline =
+        // BULK_TIMEOUT (5 s) + 1 s jitter.
+        let deadline = std::time::Instant::now() + Duration::from_secs(6);
+        loop {
+            match RtlSdrDevice::open(0) {
+                Ok(reopened) => {
+                    drop(reopened);
+                    break;
+                }
+                Err(RtlSdrError::Usb(rusb::Error::Busy))
+                    if std::time::Instant::now() < deadline =>
+                {
+                    smol::Timer::after(Duration::from_millis(100)).await;
+                }
+                Err(e) => panic!("post-drop re-open failed after bounded wait: {e}"),
+            }
+        }
     });
 }

@@ -281,7 +281,18 @@ async fn tokio_stream_drains_30_seconds() {
 /// the consumer is slow / not consuming. The bounded channel
 /// (depth 4 — `STREAM_BACKPRESSURE_DEPTH`) fills, the worker
 /// blocks on the next send, then we drop the stream. Confirm
-/// the test doesn't hang. Per audit #21.
+/// the worker exits AND releases the USB interface claim — not
+/// just that the test doesn't hang.
+///
+/// Pre-#59 the test only sleeped 500 ms after drop and asserted
+/// the test process didn't hang. A worker that returned from
+/// `blocking_send` but failed to drop its Arc<DeviceHandle>
+/// would still let the test pass while leaking the interface
+/// claim. Now mirrors `dropping_stream_stops_worker`'s #21
+/// round-2 strengthening: drop the parent dev, poll
+/// `RtlSdrDevice::open(0)` with bounded retry. If the worker
+/// failed to release, the re-open fails with `Busy` past the
+/// deadline. Per audit pass-2 #59.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs real RTL-SDR hardware — run with --ignored"]
 async fn tokio_stream_drop_while_blocking_send() {
@@ -302,21 +313,33 @@ async fn tokio_stream_drop_while_blocking_send() {
     // parked in `blocking_send`. 1 second is generous.
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Drop the stream while the worker is blocked. The
-    // `blocking_send` should fail when the receiver drops, and
-    // the worker should exit cleanly without hanging the test
-    // process. We wrap the whole drop+wait in a 10 s timeout to
-    // surface a real hang as a test failure rather than a
-    // ctrl-C-required deadlock.
-    let drop_with_timeout = async {
+    // Drop the stream + parent dev while the worker is blocked,
+    // then verify clean exit by re-opening device 0 with
+    // bounded retry. The 10 s outer timeout still catches a
+    // genuine deadlock; the inner 6 s re-open deadline catches
+    // a worker that "exited" but didn't release the USB
+    // interface (BULK_TIMEOUT 5 s + 1 s jitter).
+    let verify_clean_exit = async move {
         drop(stream);
-        // Give the worker a moment to observe the closed channel.
-        // The worker's pre-read `tx.is_closed()` check + the
-        // `blocking_send` failure cooperate to exit within one
-        // buffer cadence on the happy path.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        drop(dev);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+        loop {
+            match RtlSdrDevice::open(0) {
+                Ok(reopened) => {
+                    drop(reopened);
+                    break;
+                }
+                Err(RtlSdrError::Usb(rusb::Error::Busy))
+                    if tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => panic!("post-drop re-open failed after bounded wait: {e}"),
+            }
+        }
     };
-    tokio::time::timeout(Duration::from_secs(10), drop_with_timeout)
+    tokio::time::timeout(Duration::from_secs(10), verify_clean_exit)
         .await
         .expect("drop-while-blocking-send hung the test (worker did not exit)");
 }
