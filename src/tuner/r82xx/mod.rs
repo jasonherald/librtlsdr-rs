@@ -136,6 +136,21 @@ impl R82xxPriv {
         let filter_cur: u8 = 0x40;
         let lna_discharge: u8 = 14;
 
+        // Pre-detect bit (0x06 bit 6).
+        //
+        // **Note (audit #14):** the `use_predetect` config flag is
+        // preserved here for parity with the C upstream
+        // (`r82xx_sysfreq_sel`), but it has **no observable
+        // effect**: this conditional set is followed unconditionally
+        // by an explicit `write_reg_mask(0x06, 0, 0x40)` on line 159
+        // (the digital-TV "PRE_DECT off" path that this hardcoded
+        // SDR mode always takes). The C source has the same dead-
+        // flag behavior in both its digital and analog branches —
+        // the bit always ends up cleared by the time the function
+        // returns. If a future change wants `use_predetect` to
+        // actually matter, the unconditional clear at line 159 is
+        // the gate to remove (and the change should land in the C
+        // upstream first to keep the port faithful).
         if self.use_predetect {
             self.write_reg_mask(handle, 0x06, 0x40, 0x40)?;
         }

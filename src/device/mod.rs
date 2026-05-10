@@ -55,9 +55,10 @@ use crate::usb;
 /// `RtlSdrDevice` is [`Send`] — you can move it across thread
 /// boundaries (e.g. into a `std::thread::spawn` worker that owns
 /// the device exclusively). It is **not** [`Sync`] — the inner
-/// per-tuner driver behind a `Box<dyn Tuner + Send>` doesn't
+/// per-tuner driver behind a `Box<dyn Tuner>` doesn't
 /// require `Sync`, so sharing `&RtlSdrDevice` between threads
-/// would be unsound.
+/// would be unsound. (`Tuner` itself requires `Send` as a
+/// supertrait, so the boxed object is `Send` by definition.)
 ///
 /// The supported pattern is single-owner: one thread holds the
 /// `RtlSdrDevice` and serialises every control method call.

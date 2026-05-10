@@ -41,7 +41,14 @@ pub trait Tuner: Send {
         freq: u32,
     ) -> Result<(), RtlSdrError>;
 
-    /// Set the tuner bandwidth in Hz. Returns the IF frequency to use.
+    /// Set the tuner bandwidth in Hz, returning the IF frequency
+    /// the device should be programmed to.
+    ///
+    /// Only the R82xx backend computes a meaningful IF frequency
+    /// from the bandwidth; the other backends (E4000, FC0012,
+    /// FC0013, FC2580) have no configurable IF and return `0`.
+    /// Callers should treat `0` as "no IF change required" rather
+    /// than "literal 0 Hz IF." Per audit issue #14.
     fn set_bw(
         &mut self,
         handle: &rusb::DeviceHandle<rusb::GlobalContext>,
