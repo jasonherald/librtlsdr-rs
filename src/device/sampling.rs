@@ -81,6 +81,27 @@ impl RtlSdrDevice {
     /// Set test mode (8-bit counter output).
     ///
     /// Ports `rtlsdr_set_testmode`.
+    ///
+    /// # Shared-register caveat (faithful-port hazard)
+    ///
+    /// `set_testmode` writes demod-page-0 register `0x19` whole,
+    /// not as a read-modify-write masked update — and that register
+    /// is also owned by [`Self::set_agc_mode`] and `init_baseband`.
+    /// Both write the entire byte too. Specifically:
+    ///
+    /// - `set_testmode(true)` → `0x03` (test counter enabled,
+    ///   AGC bit 5 = 0).
+    /// - `set_testmode(false)` → `0x05` (SDR mode, AGC bit 5 = 0).
+    /// - `set_agc_mode(true)` → `0x25` (SDR mode + AGC bit 5 = 1).
+    /// - `set_agc_mode(false)` → `0x05` (SDR mode + AGC bit 5 = 0).
+    ///
+    /// Calling `set_agc_mode(true)` then `set_testmode(true)` then
+    /// `set_testmode(false)` ends with AGC silently *off* — the
+    /// `0x05` reset clobbers the AGC bit. Same defect exists in
+    /// upstream C `librtlsdr`. Per audit issue #18.
+    ///
+    /// If you need both test mode and a known AGC state, set AGC
+    /// *after* exiting test mode.
     pub fn set_testmode(&self, on: bool) -> Result<(), RtlSdrError> {
         usb::demod_write_reg(&self.handle, 0, 0x19, if on { 0x03 } else { 0x05 }, 1)
     }

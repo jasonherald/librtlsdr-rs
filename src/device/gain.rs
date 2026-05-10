@@ -71,7 +71,11 @@ impl RtlSdrDevice {
 
     /// Set RTL2832 AGC mode.
     ///
-    /// Ports `rtlsdr_set_agc_mode`.
+    /// Ports `rtlsdr_set_agc_mode`. Writes demod-page-0 register
+    /// `0x19` whole — see [`crate::RtlSdrDevice::set_testmode`]'s
+    /// "Shared-register caveat" for the AGC ↔ testmode interaction
+    /// hazard (per audit issue #18). Set AGC *after* any
+    /// `set_testmode(false)` you intend to keep effective.
     pub fn set_agc_mode(&self, on: bool) -> Result<(), RtlSdrError> {
         usb::demod_write_reg(&self.handle, 0, 0x19, if on { 0x25 } else { 0x05 }, 1)
     }
