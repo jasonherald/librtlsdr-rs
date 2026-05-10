@@ -67,6 +67,10 @@ pub(crate) fn bulk_read(
     dev_lost: &AtomicBool,
     buf: &mut [u8],
 ) -> Result<usize, RtlSdrError> {
+    // BULK_TIMEOUT = 0 selects the streaming-friendly 5 s default
+    // (NOT libusb's "no timeout" convention) so drop-cancellation
+    // is observable within at most one bulk-read cycle. See the
+    // constant's docs for the full rationale. Per audit pass-2 #47.
     let timeout = if BULK_TIMEOUT == 0 {
         Duration::from_secs(5)
     } else {
@@ -81,16 +85,31 @@ pub(crate) fn bulk_read(
 /// Translate a rusb bulk-read result into the crate's typed shape,
 /// side-effecting the `dev_lost` flag on disconnect.
 ///
+/// Three rusb variants count as disconnect:
+/// - [`rusb::Error::NoDevice`] — libusb's authoritative signal.
+/// - [`rusb::Error::Pipe`] — endpoint stall; on Linux this is
+///   the common mid-flight-disconnect surrogate before libusb
+///   downgrades subsequent calls to `NoDevice`.
+/// - [`rusb::Error::Io`] — generic transport I/O failure; same
+///   Linux mid-flight surrogate.
+///
+/// All three set `dev_lost` AND normalize to [`RtlSdrError::DeviceLost`]
+/// so the bulk-read surface and [`RtlSdrError::is_disconnected`]
+/// agree (CodeRabbit on PR #80 caught the earlier asymmetry —
+/// pre-fix, `Pipe`/`Io` looked disconnected to callers via
+/// `is_disconnected()` but didn't trigger the `dev_lost` flag,
+/// so `Drop` ran cleanup against a dead handle).
+///
 /// Pulled out of [`bulk_read`] so the disconnect-detection
 /// behavior can be unit-tested without a real USB handle.
-/// Per audit pass-2 #40.
+/// Per audit pass-2 #40 + #43.
 fn translate_bulk_result(
     result: rusb::Result<usize>,
     dev_lost: &AtomicBool,
 ) -> Result<usize, RtlSdrError> {
     match result {
         Ok(n) => Ok(n),
-        Err(rusb::Error::NoDevice) => {
+        Err(rusb::Error::NoDevice | rusb::Error::Pipe | rusb::Error::Io) => {
             // `Release` pairs with the `Drop` impl's `Acquire`
             // load — any cleanup-skipping decision must observe
             // a flag set by a happens-before bulk-read failure.
@@ -342,10 +361,13 @@ impl RtlSdrDevice {
                     // ZLPs) but doesn't increment it either —
                     // distinct from Ok(0).
                 }
-                Err(rusb::Error::NoDevice) => {
+                Err(rusb::Error::NoDevice | rusb::Error::Pipe | rusb::Error::Io) => {
                     // Mirror `bulk_read`'s `dev_lost` side effect
                     // so `Drop` can skip cleanup against a
-                    // vanished handle. Per audit pass-2 #40.
+                    // vanished handle. Treats Linux hot-unplug
+                    // surrogates (`Pipe`/`Io`) same as
+                    // `NoDevice` — see `translate_bulk_result`
+                    // doc for why. Per audit pass-2 #40 + #43.
                     self.dev_lost.store(true, Ordering::Release);
                     return Err(RtlSdrError::DeviceLost);
                 }
@@ -477,16 +499,42 @@ mod tests {
         assert!(!flag.load(Ordering::Acquire));
     }
 
-    /// Pin that other transport errors do NOT trip the
-    /// disconnect flag. `Timeout` is the most important — a slow
-    /// stream is healthy, not lost.
+    /// Per CodeRabbit on PR #80: `Pipe` and `Io` are the Linux
+    /// hot-unplug surrogates surfaced before libusb downgrades
+    /// to `NoDevice`. They must trigger the same side effect
+    /// (set `dev_lost`) and normalize to the same error
+    /// (`DeviceLost`) as `NoDevice` itself, otherwise the
+    /// bulk-read surface and `is_disconnected()` disagree and
+    /// `Drop` runs cleanup against a dead handle.
+    #[test]
+    fn translate_pipe_and_io_treated_as_disconnect() {
+        for kind in [rusb::Error::Pipe, rusb::Error::Io] {
+            let flag = AtomicBool::new(false);
+            let result = translate_bulk_result(Err(kind), &flag);
+            assert!(
+                matches!(result, Err(RtlSdrError::DeviceLost)),
+                "{kind:?} should normalize to DeviceLost"
+            );
+            assert!(
+                flag.load(Ordering::Acquire),
+                "dev_lost should be set for {kind:?}"
+            );
+        }
+    }
+
+    /// Pin that genuinely-transient or unrelated transport
+    /// errors do NOT trip the disconnect flag. `Timeout` is the
+    /// most important — a slow stream is healthy, not lost.
+    /// `Access` and `Overflow` mirror the exclusion set the
+    /// `is_disconnected` test pins (CodeRabbit on PR #80) so
+    /// the two surfaces stay in sync — a future widening of
+    /// either set fires both tests.
     #[test]
     fn translate_other_errors_do_not_touch_dev_lost_flag() {
         for kind in [
             rusb::Error::Timeout,
-            rusb::Error::Pipe,
-            rusb::Error::Io,
             rusb::Error::Overflow,
+            rusb::Error::Access,
         ] {
             let flag = AtomicBool::new(false);
             let _ = translate_bulk_result(Err(kind), &flag);

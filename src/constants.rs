@@ -248,7 +248,26 @@ pub const DEFAULT_BUF_LENGTH: u32 = 16 * 32 * 512;
 /// USB control transfer timeout (ms).
 pub const CTRL_TIMEOUT: u64 = 300;
 
-/// USB bulk transfer timeout (ms). 0 = no timeout.
+/// USB bulk transfer timeout (ms).
+///
+/// **`0` is a sentinel that selects the streaming-friendly 5 s
+/// default**, NOT "no timeout" as the libusb-level convention
+/// would suggest.
+///
+/// `bulk_read` translates the constant `0 → Duration::from_secs(5)`
+/// so a stream-cancel signal (drop the stream / set the cancel
+/// flag) is observable within at most one bulk-read cycle. A true
+/// "wait forever" would let a paused stream block the worker
+/// indefinitely and prevent drop-cancellation from ever firing
+/// — see `RtlSdrReader::stream_samples_tokio`'s "Drop semantics"
+/// section.
+///
+/// Diverges from C upstream's `librtlsdr.c` (which passes the
+/// constant straight to `libusb_bulk_transfer` and does mean
+/// "no timeout" at the rusb level). The Rust port intentionally
+/// substitutes 5 s because the cancellation story would otherwise
+/// be broken; a future `#633` (true in-flight USB cancel) would
+/// let us drop this substitution. Per audit pass-2 #47.
 pub const BULK_TIMEOUT: u64 = 0;
 
 /// USB bulk transfer endpoint for IQ data.

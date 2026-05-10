@@ -592,35 +592,64 @@ impl RtlSdrDevice {
         );
 
         if rtl_freq > 0 && self.rtl_xtal != rtl_freq {
+            // Stash for rollback on failure: `set_sample_rate`
+            // reads `self.rtl_xtal` internally, so we have to
+            // assign before the call — but if the call fails,
+            // a stale cache that claimed the new value while
+            // the hardware was still on the old rate would
+            // corrupt subsequent `xtal_freq()` reads. Mirror
+            // the #11 pattern: roll back on `Err`. Per audit
+            // pass-2 #44.
+            let old_rtl_xtal = self.rtl_xtal;
             self.rtl_xtal = rtl_freq;
             if self.rate > 0 {
-                self.set_sample_rate(self.rate)?;
+                if let Err(e) = self.set_sample_rate(self.rate) {
+                    self.rtl_xtal = old_rtl_xtal;
+                    return Err(e);
+                }
             }
         }
 
-        if self.tun_xtal != tuner_freq {
-            self.tun_xtal = if tuner_freq == 0 {
-                self.rtl_xtal
-            } else {
-                tuner_freq
-            };
+        // Compare against the *effective* new value, not the
+        // raw `0` sentinel. CodeRabbit on PR #80: pre-fix,
+        // `set_xtal_freq(0, 0)` on a device where `tun_xtal`
+        // already tracked `rtl_xtal` (the typical case after
+        // `open()`) would still trigger a retune even though
+        // the effective value didn't change.
+        let new_tun_xtal = if tuner_freq == 0 {
+            self.rtl_xtal
+        } else {
+            tuner_freq
+        };
+        if self.tun_xtal != new_tun_xtal {
+            // Same rollback shape for the tuner-side state.
+            // We mutate three things before the fallible
+            // `set_center_freq`: `self.tun_xtal`, the tuner
+            // driver's internal xtal, and (transitively via
+            // PPM correction) the corrected value `set_xtal`
+            // saw. On failure, restore all three. Per audit
+            // pass-2 #44 + #39.
+            let old_tun_xtal = self.tun_xtal;
+            let old_corrected_xtal = self.get_tuner_xtal();
+            self.tun_xtal = new_tun_xtal;
 
             // Push the new (PPM-corrected) tuner xtal into the
             // backend's PLL state. C upstream does this in
-            // `rtlsdr_set_xtal_freq` (librtlsdr.c:752-754); the
-            // 0.1.x-0.2.0 Rust port updated `self.tun_xtal` and
-            // called `set_center_freq` for the retune, but the
-            // tuner driver's internal xtal field still held the
-            // stale value, so the PLL math computed against old
-            // xtal. Same shape `set_freq_correction` uses (#4)
-            // — extended here per audit pass-2 #39.
-            let corrected_xtal = self.get_tuner_xtal();
+            // `rtlsdr_set_xtal_freq` (librtlsdr.c:752-754).
+            // Per audit pass-2 #39.
+            let new_corrected_xtal = self.get_tuner_xtal();
             if let Some(tuner) = &mut self.tuner {
-                tuner.set_xtal(corrected_xtal);
+                tuner.set_xtal(new_corrected_xtal);
             }
 
             if self.freq > 0 {
-                self.set_center_freq(self.freq)?;
+                if let Err(e) = self.set_center_freq(self.freq) {
+                    self.tun_xtal = old_tun_xtal;
+                    if let Some(tuner) = &mut self.tuner {
+                        tuner.set_xtal(old_corrected_xtal);
+                    }
+                    return Err(e);
+                }
             }
         }
 

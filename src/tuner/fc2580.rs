@@ -667,14 +667,35 @@ impl Fc2580Tuner {
         };
 
         let f_comp = freq_xtal_khz / r_val;
+        // Guard against `f_comp == 0`: when `freq_xtal_khz < r_val`
+        // (xtal < 4 kHz for r_val == 4), the integer division
+        // bottoms out and the next `(f_vco / 2) / f_comp` panics
+        // (debug) / divide-faults (release). `xtal_khz()` only
+        // catches the strict-zero case; pathological-but-valid
+        // sub-4 kHz xtals slip through. Per audit pass-2 #48.
+        if f_comp == 0 {
+            return Err(TunerError::XtalIsZero.into());
+        }
         let n_val = (f_vco / 2) / f_comp;
 
         let f_diff = f_vco - 2 * f_comp * n_val;
-        let f_diff_shifted = f_diff << PLL_K_SHIFT;
-        let f_comp_shifted = (2 * f_comp) >> PLL_PRE_SHIFT_BITS;
-        let mut k_val = f_diff_shifted / f_comp_shifted;
+        // Widen to u64 and combine the K-shift with the
+        // pre-shift so we divide by `2 * f_comp` directly,
+        // avoiding two latent bugs in the C-faithful version:
+        // - `f_diff << PLL_K_SHIFT` (16) overflowed u32 for
+        //   xtal > 32.768 MHz (#49).
+        // - `(2 * f_comp) >> PLL_PRE_SHIFT_BITS` (4) bottomed
+        //   out to 0 for `f_comp ∈ 1..=7`, dividing by zero in
+        //   the next step (CodeRabbit on #80, beyond #48).
+        // The combined-shift form is mathematically equivalent
+        // for the in-spec range but safe-by-construction
+        // outside it: `denominator = 2 * f_comp` is only zero
+        // when `f_comp == 0`, which is already guarded above.
+        let numerator: u64 = u64::from(f_diff) << (PLL_K_SHIFT + PLL_PRE_SHIFT_BITS);
+        let denominator: u64 = 2 * u64::from(f_comp);
+        let mut k_val: u64 = numerator / denominator;
 
-        if f_diff_shifted - k_val * f_comp_shifted >= (f_comp >> PLL_PRE_SHIFT_BITS) {
+        if numerator - k_val * denominator >= u64::from(f_comp) {
             k_val += 1;
         }
 
