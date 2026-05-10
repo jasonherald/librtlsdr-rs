@@ -5,6 +5,81 @@ All notable changes to `librtlsdr-rs` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-05-10
+
+Second wave of audit pass-2 follow-up — closes the seven Tier-2
+correctness findings ([#43] [#44] [#45] [#46] [#47] [#48] [#49]).
+Strict patch release: pure correctness fixes + a doc-vs-code
+reconciliation, no public API surface change.
+
+### Fixed
+
+- **`is_disconnected` recognises `Pipe` / `Io` hot-unplug
+  surrogates** ([#43]). On Linux a yanked dongle commonly
+  surfaces as `rusb::Error::Pipe` or `rusb::Error::Io` from a
+  mid-flight bulk read BEFORE libusb downgrades subsequent
+  calls to `NoDevice`. Pre-#43, a reconnect-loop consumer using
+  `is_disconnected` to gate the retry path mistreated those as
+  transient and waited a full bulk-read cycle before getting an
+  actionable signal.
+- **`set_xtal_freq` rolls back cached state on failure** ([#44]).
+  Both the rtl-side and tun-side branches mutated cached state
+  BEFORE the fallible side effect (`set_sample_rate`, then
+  `set_center_freq`). On failure the cache lied about a setting
+  the hardware never accepted, corrupting downstream
+  `xtal_freq()` reads and the tuner driver's PLL math. Mirrors
+  the #11 pattern: stash old values, mutate, on `Err` restore
+  (including the tuner driver's internal xtal state via
+  `tuner.set_xtal(old_corrected_xtal)`).
+- **`set_freq_correction` updates cache only on success**
+  ([#45]). `self.corr = ppm` was assigned BEFORE the fallible
+  `set_sample_freq_correction(ppm)?`. On demod-write failure
+  `get_rtl_xtal()` / `get_tuner_xtal()` returned wrongly-
+  corrected values for the rest of the device's lifetime. Now
+  writes the demod registers first; cache update follows on
+  success.
+- **`set_tuner_gain` leaves cached gain intact on failure**
+  ([#46]). Pre-#46 reset `self.gain = 0` on the error path —
+  but `0` is a *valid* tuner gain (first entry in
+  `R82XX_GAINS`), so `tuner_gain()` lied that gain was 0 dB
+  when the hardware likely still held the previous setting.
+  The cache now reflects the last *successful* setting,
+  matching the contract `tuner_gain()` documents.
+- **FC2580 (latent): guard `f_comp == 0` to prevent
+  divide-by-zero** ([#48]). `xtal_khz()` only rejected strict
+  zero; a pathological-but-valid sub-4 kHz xtal slipped through
+  and produced `f_comp = 0` after `freq_xtal_khz / r_val`,
+  panicking the next `(f_vco / 2) / f_comp` step. Guard at the
+  call site; returns `TunerError::XtalIsZero`. FC2580 backend
+  remains latent — defense-in-depth.
+- **FC2580 (latent): widen PLL K-value math to u64 to prevent
+  shift overflow** ([#49]). `f_diff << PLL_K_SHIFT` (16)
+  overflowed u32 for xtal > 32.768 MHz. Standard RTL2832U
+  xtals are 28.8 MHz so this didn't fire today, but the C
+  upstream had the same latent bug-for-bug. Promoted
+  `f_diff_shifted`, `f_comp_shifted`, and `k_val` to u64.
+
+### Documentation
+
+- **`BULK_TIMEOUT == 0` clarified as "5 s default", not "no
+  timeout"** ([#47]). The constant's pre-#47 doc said
+  `0 = no timeout` (matching C upstream's libusb convention),
+  but `bulk_read` substitutes `Duration::from_secs(5)` for
+  `BULK_TIMEOUT == 0`. Internal divergence with no
+  caller-visible effect — but the doc lied. Updated to explain
+  the intentional substitution + the cancellation-latency
+  rationale (a true "wait forever" would let a paused stream
+  block the worker indefinitely and prevent drop-cancellation
+  from firing).
+
+[#43]: https://github.com/jasonherald/librtlsdr-rs/issues/43
+[#44]: https://github.com/jasonherald/librtlsdr-rs/issues/44
+[#45]: https://github.com/jasonherald/librtlsdr-rs/issues/45
+[#46]: https://github.com/jasonherald/librtlsdr-rs/issues/46
+[#47]: https://github.com/jasonherald/librtlsdr-rs/issues/47
+[#48]: https://github.com/jasonherald/librtlsdr-rs/issues/48
+[#49]: https://github.com/jasonherald/librtlsdr-rs/issues/49
+
 ## [0.2.1] - 2026-05-10
 
 First wave of audit pass-2 follow-up — closes the four Tier-1
