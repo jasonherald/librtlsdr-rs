@@ -25,6 +25,7 @@
 //! yields the error then `None`.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
@@ -32,6 +33,7 @@ use futures_core::Stream;
 use crate::error::RtlSdrError;
 
 use super::RtlSdrReader;
+use super::reader::ReaderBusyGuard;
 
 /// Channel depth — 4 × 256 KB ≈ 1 MB ≈ 250 ms at 2 Msps × 2
 /// bytes/sample = 4 MB/s. Enough to absorb a slow tick on the
@@ -48,6 +50,11 @@ impl RtlSdrReader {
     /// another stream session.
     ///
     /// # Errors
+    ///
+    /// On contention with an existing bulk-read activity, returns
+    /// [`RtlSdrError::DeviceBusy`] paired with the unconsumed
+    /// [`RtlSdrReader`] so the caller can retry once the active
+    /// stream drops. Per #7.
     ///
     /// On preflight failure (no tokio runtime active) the
     /// returned `Err` carries both the diagnostic
@@ -111,6 +118,23 @@ impl RtlSdrReader {
             )));
         }
 
+        // Eagerly acquire the reader-busy guard. On contention,
+        // return the unconsumed reader so the caller can retry once
+        // the existing stream drops. Per #7. The guard is moved
+        // into the spawn_blocking closure below, so it lives for
+        // the entire worker's lifetime and releases on Drop when
+        // the worker returns (clean exit, error, or consumer drop).
+        let guard = match ReaderBusyGuard::try_acquire(Arc::clone(&self.busy)) {
+            Ok(g) => g,
+            Err(e) => return Err(Box::new((e, self))),
+        };
+
+        let buffer_size = if buffer_size == 0 {
+            crate::constants::DEFAULT_BUF_LENGTH as usize
+        } else {
+            buffer_size
+        };
+
         let (tx, rx) = tokio::sync::mpsc::channel(STREAM_BACKPRESSURE_DEPTH);
 
         // The blocking task owns the reader (and via it the
@@ -120,24 +144,30 @@ impl RtlSdrReader {
         // reads; mid-read drops still wait for the in-flight
         // bulk transfer to return (see method-level "Drop
         // semantics" docs).
+        //
+        // The read loop calls `bulk_read` directly rather than
+        // `iter_samples` to avoid the iterator's own re-acquire
+        // path — we already hold the guard. Per #7.
         tokio::task::spawn_blocking(move || {
+            let _guard = guard;
             let reader = self;
-            let mut iter = reader.iter_samples(buffer_size);
             loop {
                 if tx.is_closed() {
                     return;
                 }
-                match iter.next() {
-                    Some(chunk) => {
-                        let is_err = chunk.is_err();
-                        if tx.blocking_send(chunk).is_err() {
-                            return;
-                        }
-                        if is_err {
+                let mut buf = vec![0u8; buffer_size];
+                match super::streaming::bulk_read(&reader.handle, &mut buf) {
+                    Ok(0) => return, // fuse on zero-length read
+                    Ok(n) => {
+                        buf.truncate(n);
+                        if tx.blocking_send(Ok(buf)).is_err() {
                             return;
                         }
                     }
-                    None => return,
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(e));
+                        return;
+                    }
                 }
             }
         });

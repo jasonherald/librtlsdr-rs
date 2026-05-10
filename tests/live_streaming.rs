@@ -28,7 +28,7 @@
 
 use std::time::Duration;
 
-use librtlsdr_rs::RtlSdrDevice;
+use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
 
 /// Helper: open device 0 and configure for FM broadcast tuning.
 /// Skips the test by returning `None` if no device is plugged
@@ -204,4 +204,40 @@ fn reader_iter_in_std_thread() {
     }
 
     handle.join().expect("worker thread panicked");
+}
+
+/// Per #7: a second concurrent streaming session must return
+/// `RtlSdrError::DeviceBusy` rather than silently splitting the IQ
+/// stream between the two readers. Verifies the runtime busy-flag
+/// guards `stream_samples_tokio` and that the unconsumed reader is
+/// returned in the error so the caller can retry.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs real RTL-SDR hardware — run with --ignored"]
+async fn second_reader_returns_device_busy() {
+    let Some(dev) = open_or_skip("second_reader_returns_device_busy") else {
+        return;
+    };
+
+    // First stream succeeds and is held alive for the duration of
+    // the test (drop at the end releases the busy-flag).
+    let reader1 = dev.reader();
+    let _stream1 = reader1
+        .stream_samples_tokio(0)
+        .map_err(|boxed| boxed.0)
+        .expect("first stream should succeed on a free device");
+
+    // Second stream attempt on the same device must fail with
+    // DeviceBusy and return the unconsumed reader.
+    let reader2 = dev.reader();
+    let result = reader2.stream_samples_tokio(0);
+    match result {
+        Err(boxed) => {
+            let (err, _returned_reader) = *boxed;
+            assert!(
+                matches!(err, RtlSdrError::DeviceBusy),
+                "expected DeviceBusy on contended stream, got {err:?}",
+            );
+        }
+        Ok(_) => panic!("second concurrent stream should have failed"),
+    }
 }
