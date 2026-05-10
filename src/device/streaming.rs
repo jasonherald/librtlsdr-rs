@@ -390,4 +390,16 @@ mod tests {
         assert_iter::<SampleIter<'_>>();
         assert_fused::<SampleIter<'_>>();
     };
+
+    // Pin `SampleIter: !Send` — the borrowed iterator is the
+    // single-thread surface (the owned `ReaderIter` is the
+    // sendable one). `SampleIter<'a>` borrows `&'a RtlSdrDevice`
+    // and `RtlSdrDevice: !Sync`, so `&RtlSdrDevice: !Send`,
+    // making `SampleIter: !Send` transitively. If a future field
+    // change ever made `RtlSdrDevice: Sync`, `SampleIter` would
+    // silently become Sendable — and a downstream consumer might
+    // inadvertently move it across threads, violating the
+    // documented "single-threaded sync iteration" contract.
+    // Per audit issue #20.
+    static_assertions::assert_not_impl_any!(SampleIter<'static>: Send);
 }

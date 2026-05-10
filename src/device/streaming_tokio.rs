@@ -201,5 +201,11 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_stream::<TokioSampleStream>();
         assert_send::<TokioSampleStream>();
+        // Pin `Item: Send` so a future change to `RtlSdrError`
+        // (e.g. adding a non-Send variant via #16's deferred typed
+        // error work) is caught here rather than surfacing in
+        // consumer code that does `tokio::spawn(stream.next())`.
+        // Per audit issue #20.
+        assert_send::<<TokioSampleStream as Stream>::Item>();
     };
 }

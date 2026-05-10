@@ -153,5 +153,8 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_stream::<SmolSampleStream>();
         assert_send::<SmolSampleStream>();
+        // Item: Send pin — same rationale as the tokio sibling.
+        // Per audit issue #20.
+        assert_send::<<SmolSampleStream as Stream>::Item>();
     };
 }
