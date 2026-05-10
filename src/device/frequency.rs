@@ -37,6 +37,26 @@ impl RtlSdrDevice {
             tracing::debug!("Exact sample rate: {} Hz", real_rate);
         }
 
+        // Preflight: when offset tuning is active and the current
+        // center freq is set, the trailing
+        // `set_offset_tuning(true)?` at the bottom of this function
+        // would fail (post-#10) if the new sample rate's floor put
+        // us at or below the current freq — but by then `self.rate`
+        // and several device registers would already be updated
+        // (partial-apply). Catch the bad combination before any
+        // state mutation. Per #10 round 2 (Code Rabbit).
+        if self.offs_freq > 0 && self.freq > 0 {
+            let new_floor = offset_tuning_floor(real_rate);
+            if self.freq <= new_floor {
+                return Err(RtlSdrError::InvalidParameter(format!(
+                    "cannot set sample rate to {real_rate} Hz: current freq {} Hz would fall \
+                     at or below the new offset-tuning floor {new_floor} Hz \
+                     (≈ 0.85 × sample_rate); disable offset tuning or tune higher first",
+                    self.freq,
+                )));
+            }
+        }
+
         self.rate = real_rate;
 
         // Set tuner bandwidth and update IF frequency
@@ -178,9 +198,10 @@ impl RtlSdrDevice {
             ));
         }
 
-        // Based on keenerds 1/f noise measurements
+        // Based on keenerds 1/f noise measurements; see
+        // [`offset_tuning_floor`].
         let new_offs_freq = if on {
-            (self.rate / 2) * OFFSET_TUNING_MULTIPLIER_NUM / OFFSET_TUNING_MULTIPLIER_DEN
+            offset_tuning_floor(self.rate)
         } else {
             0
         };
@@ -274,6 +295,22 @@ fn freq_minus_offset(freq: u32, offs_freq: u32) -> Result<u32, RtlSdrError> {
     })
 }
 
+/// Compute the offset-tuning floor for a given sample rate.
+///
+/// `≈ 0.85 × rate`, matching keenerds' 1/f noise measurements (the
+/// `OFFSET_TUNING_MULTIPLIER_*` constants encode `1.7 × half-rate`).
+/// When offset tuning is enabled the tuner is programmed at
+/// `freq - floor`, so `freq` must be strictly above this value or
+/// `freq_minus_offset` returns an error.
+///
+/// Used by both [`RtlSdrDevice::set_offset_tuning`] (to decide
+/// whether to accept the toggle) and [`RtlSdrDevice::set_sample_rate`]
+/// (to preflight the post-rate-change `set_offset_tuning(true)?`
+/// call so the rate update can't half-apply).
+fn offset_tuning_floor(rate: u32) -> u32 {
+    (rate / 2) * OFFSET_TUNING_MULTIPLIER_NUM / OFFSET_TUNING_MULTIPLIER_DEN
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,5 +347,29 @@ mod tests {
             ),
             "expected InvalidParameter naming both values, got {result:?}",
         );
+    }
+
+    /// Per #10 round 2 (Code Rabbit): `offset_tuning_floor`
+    /// produces `(rate / 2) × 1.7 = 0.85 × rate`. Pin a few
+    /// known sample rates so a future tweak to the
+    /// `OFFSET_TUNING_MULTIPLIER_*` constants has to reckon with
+    /// the user-visible floor values (used in error messages and
+    /// in `set_sample_rate`'s preflight check).
+    #[test]
+    fn offset_tuning_floor_at_2_4msps_is_2_04mhz() {
+        // (2_400_000 / 2) * 170 / 100 = 1_200_000 * 1.7 = 2_040_000
+        assert_eq!(offset_tuning_floor(2_400_000), 2_040_000);
+    }
+
+    #[test]
+    fn offset_tuning_floor_at_2_048msps_is_1_7408mhz() {
+        // (2_048_000 / 2) * 170 / 100 = 1_024_000 * 1.7 = 1_740_800
+        assert_eq!(offset_tuning_floor(2_048_000), 1_740_800);
+    }
+
+    #[test]
+    fn offset_tuning_floor_zero_rate_is_zero() {
+        // Defensive: rate=0 should not panic (integer division ok).
+        assert_eq!(offset_tuning_floor(0), 0);
     }
 }
