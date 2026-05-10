@@ -46,10 +46,18 @@ impl RtlSdrDevice {
             if let Ok(if_freq) = tuner.set_bw(&self.handle, bw, self.rate) {
                 // Update IF frequency registers (critical — audit fix #2)
                 let _ = self.set_if_freq(if_freq);
-                // Retune to apply new IF (audit fix #2)
+                // Retune to apply new IF (audit fix #2). Skip the
+                // tuner call entirely when freq < offs_freq —
+                // pre-#10 the panic-shape `self.freq - self.offs_freq`
+                // would crash debug builds and silently wrap in
+                // release. Audit issue #9 will add tracing on the
+                // swallowed errors here; for now preserve the
+                // existing best-effort shape.
                 if self.freq > 0 {
                     if let Some(tuner) = &mut self.tuner {
-                        let _ = tuner.set_freq(&self.handle, self.freq - self.offs_freq);
+                        if let Ok(adjusted) = freq_minus_offset(self.freq, self.offs_freq) {
+                            let _ = tuner.set_freq(&self.handle, adjusted);
+                        }
                     }
                 }
             }
@@ -85,7 +93,12 @@ impl RtlSdrDevice {
             r = self.set_if_freq(freq);
         } else if let Some(tuner) = &mut self.tuner {
             usb::set_i2c_repeater(&self.handle, true)?;
-            r = tuner.set_freq(&self.handle, freq.wrapping_sub(self.offs_freq));
+            // Subtract the offset-tuning floor before programming
+            // the tuner. Pre-#10 this used `wrapping_sub`, silently
+            // producing a huge u32 when freq < offs_freq; now
+            // returns a friendly `InvalidParameter` instead.
+            r = freq_minus_offset(freq, self.offs_freq)
+                .and_then(|adjusted| tuner.set_freq(&self.handle, adjusted));
             usb::set_i2c_repeater(&self.handle, false)?;
         }
 
@@ -180,9 +193,14 @@ impl RtlSdrDevice {
             let actual_bw = if bw > 0 { bw } else { self.rate };
             if let Ok(if_freq) = tuner.set_bw(&self.handle, actual_bw, self.rate) {
                 let _ = self.set_if_freq(if_freq);
+                // Skip tuner retune when freq < offs_freq — same
+                // pre-#10 panic-shape concern as `set_sample_rate`.
+                // Audit issue #9 covers the swallowed-error tracing.
                 if self.freq > 0 {
                     if let Some(tuner) = &mut self.tuner {
-                        let _ = tuner.set_freq(&self.handle, self.freq - self.offs_freq);
+                        if let Ok(adjusted) = freq_minus_offset(self.freq, self.offs_freq) {
+                            let _ = tuner.set_freq(&self.handle, adjusted);
+                        }
                     }
                 }
             }
@@ -209,9 +227,6 @@ impl RtlSdrDevice {
 /// error. Catching it before the tuner call yields a friendly
 /// typed error naming the floor and the requested value.
 //
-// `dead_code` allow lifts in commit 2 of this branch when the
-// three call sites in the impl above start using it. Per #10 plan.
-#[allow(dead_code)]
 fn freq_minus_offset(freq: u32, offs_freq: u32) -> Result<u32, RtlSdrError> {
     freq.checked_sub(offs_freq).ok_or_else(|| {
         RtlSdrError::InvalidParameter(format!(
