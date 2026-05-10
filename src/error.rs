@@ -72,10 +72,13 @@ impl RtlSdrError {
     /// timeout (the USB transfer didn't complete within the
     /// configured deadline).
     ///
-    /// Useful in retry-with-backoff wrappers around bulk reads:
+    /// Useful in retry-with-backoff wrappers around bulk reads.
+    /// The example uses the crate's `pub use rusb` re-export so
+    /// the consumer doesn't need a direct `rusb` dependency
+    /// (the whole point of [`crate::rusb`]):
     ///
     /// ```
-    /// use librtlsdr_rs::RtlSdrError;
+    /// use librtlsdr_rs::{RtlSdrError, rusb};
     /// let e = RtlSdrError::Usb(rusb::Error::Timeout);
     /// assert!(e.is_timeout());
     /// ```
