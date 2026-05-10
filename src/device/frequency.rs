@@ -380,19 +380,36 @@ impl RtlSdrDevice {
 ///
 /// # Errors
 ///
-/// Returns [`RtlSdrError::InvalidParameter`] when `freq < offs_freq`.
-/// Historically the C upstream (and this crate before #10) did
-/// unsigned-wrapping subtraction here, producing a huge `u32` that
-/// the tuner rejected with an opaque "frequency out of range"
-/// error. Catching it before the tuner call yields a friendly
-/// typed error naming the floor and the requested value.
+/// Returns [`RtlSdrError::InvalidParameter`] in two cases:
+///
+/// 1. `freq < offs_freq`: historically the C upstream (and this
+///    crate before #10) did unsigned-wrapping subtraction here,
+///    producing a huge `u32` that the tuner rejected with an
+///    opaque "frequency out of range" error.
+///
+/// 2. `freq == offs_freq && offs_freq > 0`: pre-#68 this returned
+///    `Some(0)`, which `set_sample_rate`'s retune path then passed
+///    to `tuner.set_freq(handle, 0)` — the tuner rejected with a
+///    generic "tuner retune failed" log line that blamed the
+///    tuner for what was actually a config the driver should have
+///    caught. Now rejected here with a clearer error that names
+///    both values and points at the fix ("tune above the floor").
+///    The `offs_freq > 0` qualifier preserves the offset-off
+///    identity case (`freq_minus_offset(any_freq, 0) == Ok(any_freq)`).
 //
 fn freq_minus_offset(freq: u32, offs_freq: u32) -> Result<u32, RtlSdrError> {
-    freq.checked_sub(offs_freq).ok_or_else(|| {
+    let adjusted = freq.checked_sub(offs_freq).ok_or_else(|| {
         RtlSdrError::InvalidParameter(format!(
             "freq {freq} Hz is below the offset-tuning floor {offs_freq} Hz"
         ))
-    })
+    })?;
+    if adjusted == 0 && offs_freq > 0 {
+        return Err(RtlSdrError::InvalidParameter(format!(
+            "freq {freq} Hz is exactly at the offset-tuning floor {offs_freq} Hz; \
+             tune above the floor"
+        )));
+    }
+    Ok(adjusted)
 }
 
 /// Compute the offset-tuning floor for a given sample rate.
@@ -423,9 +440,24 @@ mod tests {
         );
     }
 
+    /// Per audit pass-2 #68: `freq == offs_freq` with offset
+    /// tuning ON used to return `Some(0)`, which the tuner
+    /// rejected after the fact as a generic "tuner retune
+    /// failed". Now rejected up-front with a clearer error.
+    /// (The offset-off identity case
+    /// `freq_minus_offset(_, 0) == Ok(freq)` is unaffected —
+    /// see the next test.)
     #[test]
-    fn freq_minus_offset_at_floor_returns_zero() {
-        assert_eq!(freq_minus_offset(2_720_000, 2_720_000).ok(), Some(0));
+    fn freq_minus_offset_at_floor_with_offset_on_returns_invalid_parameter() {
+        let result = freq_minus_offset(2_720_000, 2_720_000);
+        assert!(
+            matches!(
+                &result,
+                Err(RtlSdrError::InvalidParameter(msg))
+                    if msg.contains("2720000") && msg.contains("exactly at")
+            ),
+            "expected InvalidParameter naming the floor, got {result:?}",
+        );
     }
 
     #[test]
