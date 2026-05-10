@@ -135,11 +135,19 @@ impl RtlSdrReader {
 
         // The blocking task owns the reader (and via it the
         // Arc<DeviceHandle> clone) for the duration of the
-        // stream. Pre-read drop check via `tx.is_closed()`
-        // catches consumer drops in the brief window between
-        // reads; mid-read drops still wait for the in-flight
-        // bulk transfer to return (see method-level "Drop
-        // semantics" docs).
+        // stream. Mid-read drops wait for the in-flight bulk
+        // transfer to return (see method-level "Drop semantics"
+        // docs).
+        //
+        // **Drop-detection mechanism (per audit pass-2 #61):**
+        // the load-bearing exit is `tx.blocking_send(...).is_err()`
+        // returning after the next read (channel closed when all
+        // receivers drop). The `tx.is_closed()` pre-read check is
+        // an *allocation-saving optimization* — when the consumer
+        // is already gone, it skips the `vec![0u8; buffer_size]`
+        // for the next chunk. It is NOT load-bearing for exit and
+        // is racy against concurrent receiver drops (no harm; the
+        // post-read send-failure path handles it).
         //
         // The read loop calls `bulk_read` directly rather than
         // `iter_samples` to avoid the iterator's own re-acquire

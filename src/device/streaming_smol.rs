@@ -111,6 +111,16 @@ impl RtlSdrReader {
         // Read loop calls `bulk_read` directly rather than
         // `iter_samples` to avoid the iterator's own re-acquire
         // path — we already hold the guard. Per #7.
+        //
+        // **Drop-detection mechanism (per audit pass-2 #61):**
+        // the load-bearing exit is `tx.send_blocking(...).is_err()`
+        // after the next read (channel closed when all receivers
+        // drop). The `tx.is_closed()` pre-read check is an
+        // *allocation-saving optimization* — when the consumer is
+        // already gone, it skips the `vec![0u8; buffer_size]` for
+        // the next chunk. Not load-bearing for exit; the
+        // post-read send-failure path is what guarantees
+        // termination.
         blocking::unblock(move || {
             let _guard = guard;
             let reader = self;
