@@ -40,6 +40,22 @@ pub struct R82xxPriv {
     pub(crate) use_predetect: bool,
 
     // State
+    //
+    // **Cache range note (per audit pass-2 #63):**
+    // `regs` covers reg 0x05..0x22 (NUM_REGS = 30, indexed
+    // from `REG_SHADOW_START = 5`), but `set_tv_standard`
+    // initializes only the first 27 entries via
+    // `regs[..27].copy_from_slice(&R82XX_INIT_ARRAY)`. The top
+    // 3 entries (idx 27..30, regs 0x20..=0x22) keep their
+    // zero-init values from `R82xxPriv::new`.
+    //
+    // No in-tree caller targets 0x20..=0x22 via
+    // `write_reg_mask` (which is the only path that consults
+    // the cache for read-modify-write), so the silent-zero
+    // entries are unreachable today. If a future change adds a
+    // mask write to that range, the cache would lie about the
+    // pre-write hardware state — verify by greping for
+    // `write_reg_mask` calls before any such addition.
     pub(crate) regs: [u8; NUM_REGS],
     pub(crate) buf: [u8; NUM_REGS + 1],
     pub(crate) xtal_cap_sel: XtalCapValue,
