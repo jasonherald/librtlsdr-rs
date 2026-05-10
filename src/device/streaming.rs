@@ -67,6 +67,10 @@ pub(crate) fn bulk_read(
     dev_lost: &AtomicBool,
     buf: &mut [u8],
 ) -> Result<usize, RtlSdrError> {
+    // BULK_TIMEOUT = 0 selects the streaming-friendly 5 s default
+    // (NOT libusb's "no timeout" convention) so drop-cancellation
+    // is observable within at most one bulk-read cycle. See the
+    // constant's docs for the full rationale. Per audit pass-2 #47.
     let timeout = if BULK_TIMEOUT == 0 {
         Duration::from_secs(5)
     } else {
