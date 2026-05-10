@@ -34,6 +34,13 @@ pub mod sys_reg {
 }
 
 /// Block IDs for register addressing.
+///
+/// `#[non_exhaustive]` so adding a new variant in any future
+/// patch release is non-breaking. Consumers exhaustively
+/// matching on `Block` (e.g. inside an `RtlSdrError::RegisterAccess
+/// { block, .. }` arm) must include a catch-all `_ => ...`
+/// arm. Per #51 / 0.3.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Block {
@@ -54,6 +61,14 @@ pub enum Block {
 }
 
 /// Tuner type detected on the device.
+///
+/// `#[non_exhaustive]` so a future RTL-SDR variant with a new
+/// tuner IC (history says these are rare but they happen —
+/// R828D was a later addition to upstream) can ship as a
+/// patch release without breaking consumer match arms.
+/// Exhaustive matches on `TunerType` (e.g. routing per-tuner
+/// UI) must include a catch-all `_ => ...` arm. Per #51 / 0.3.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TunerType {
     /// No tuner detected.
