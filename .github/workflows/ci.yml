@@ -120,6 +120,60 @@ jobs:
       - name: Build (all features, MSRV pin)
         run: cargo build --all-features --locked
 
+  cross-platform:
+    name: Cross-platform build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          key: cross-${{ matrix.os }}
+
+      # libusb install is platform-specific. Linux is covered by the
+      # primary `check` job above; here we add the two other tier-1
+      # rustc targets so the README's "no C build dep, works
+      # everywhere" claim is actually validated. Per #17.
+      - name: Install libusb (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libusb pkg-config
+
+      - name: Install libusb (Windows)
+        if: runner.os == 'Windows'
+        # vcpkg is preinstalled on `windows-latest`. Build the static
+        # x64-windows triplet so `libusb1-sys`'s build script picks it
+        # up via VCPKG_ROOT (also preset by the runner). The
+        # VCPKGRS_DYNAMIC=0 env on the cargo invocations below selects
+        # the static link path.
+        run: vcpkg install libusb:x64-windows-static-md
+        shell: bash
+
+      - name: Build (all features)
+        env:
+          # Set on every step so consumers reproducing locally see the
+          # invocation pattern; ignored by non-Windows builds.
+          VCPKGRS_DYNAMIC: 0
+        run: cargo build --all-features --locked
+
+      - name: Test (lib only — no hardware)
+        env:
+          VCPKGRS_DYNAMIC: 0
+        # `--lib` excludes integration tests in `tests/` (those are
+        # all `#[ignore]`-gated and need real hardware anyway). Doc
+        # tests run via `--doc` separately so any platform-specific
+        # codegen quirks surface in their own step.
+        run: cargo test --lib --all-features --locked
+
+      - name: Doctests (all features)
+        env:
+          VCPKGRS_DYNAMIC: 0
+        run: cargo test --doc --all-features --locked
+
   # `cargo-deny` runs in its own dedicated workflow (`.github/workflows/deny.yml`)
   # which adds a weekly cron on top of per-PR runs. Per #17 we removed the
   # duplicate inline job here — it ran identically on every PR for no extra
