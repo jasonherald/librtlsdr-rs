@@ -97,6 +97,29 @@ jobs:
       - name: Build docs (all features, like docs.rs)
         run: cargo doc --all-features --no-deps --locked
 
+  msrv:
+    name: MSRV (1.95.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # Pin the toolchain to the version declared in `Cargo.toml`'s
+      # `rust-version = "1.95"`. CI's default `stable` channel will keep
+      # advancing past this; without the pin a 1.96-only feature could
+      # land green and silently break consumers on 1.95. Per #17.
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          key: msrv-1.95.0
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev pkg-config
+      - name: Build (all features, MSRV pin)
+        run: cargo build --all-features --locked
+
   # `cargo-deny` runs in its own dedicated workflow (`.github/workflows/deny.yml`)
   # which adds a weekly cron on top of per-PR runs. Per #17 we removed the
   # duplicate inline job here — it ran identically on every PR for no extra
