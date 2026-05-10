@@ -159,6 +159,19 @@ pub enum TunerError {
     /// `#[source]` makes the inner error walkable via
     /// `std::error::Error::source` for consumers using
     /// `anyhow`-style chained-error UI.
+    ///
+    /// **Coverage caveat (per audit pass-2 #74):** `Context`
+    /// only wraps `TunerError` — by construction it can't carry
+    /// a `Usb(rusb::Error)` or `DeviceLost` from the same
+    /// operation. The R82xx filter-calibration path uses this
+    /// shape today: failures from the calibration's tuner-side
+    /// math get wrapped (`Context { context: "filter
+    /// calibration", source: ... }`), but a USB transport error
+    /// during the same calibration sequence propagates as a
+    /// bare `RtlSdrError::Usb(...)` with no calibration-context
+    /// breadcrumb. Consumers building diagnostic UIs should
+    /// match on both shapes if they want full coverage of the
+    /// "what was the device doing when it failed" question.
     #[error("{context}: {source}")]
     Context {
         context: &'static str,
