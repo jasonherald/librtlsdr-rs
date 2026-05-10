@@ -667,6 +667,15 @@ impl Fc2580Tuner {
         };
 
         let f_comp = freq_xtal_khz / r_val;
+        // Guard against `f_comp == 0`: when `freq_xtal_khz < r_val`
+        // (xtal < 4 kHz for r_val == 4), the integer division
+        // bottoms out and the next `(f_vco / 2) / f_comp` panics
+        // (debug) / divide-faults (release). `xtal_khz()` only
+        // catches the strict-zero case; pathological-but-valid
+        // sub-4 kHz xtals slip through. Per audit pass-2 #48.
+        if f_comp == 0 {
+            return Err(TunerError::XtalIsZero.into());
+        }
         let n_val = (f_vco / 2) / f_comp;
 
         let f_diff = f_vco - 2 * f_comp * n_val;
