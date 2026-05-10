@@ -35,6 +35,10 @@ impl RtlSdrDevice {
     /// `manual = true` for manual gain, `false` for automatic.
     pub fn set_tuner_gain_mode(&mut self, manual: bool) -> Result<(), RtlSdrError> {
         if let Some(tuner) = &mut self.tuner {
+            tracing::info!(
+                "set_tuner_gain_mode: {}",
+                if manual { "manual" } else { "automatic (AGC)" },
+            );
             usb::set_i2c_repeater(&self.handle, true)?;
             let result = tuner.set_gain_mode(&self.handle, manual);
             usb::set_i2c_repeater(&self.handle, false)?;
@@ -71,8 +75,13 @@ impl RtlSdrDevice {
 
     /// Set RTL2832 AGC mode.
     ///
-    /// Ports `rtlsdr_set_agc_mode`.
+    /// Ports `rtlsdr_set_agc_mode`. Writes demod-page-0 register
+    /// `0x19` whole — see [`crate::RtlSdrDevice::set_testmode`]'s
+    /// "Shared-register caveat" for the AGC ↔ testmode interaction
+    /// hazard (per audit issue #18). Set AGC *after* any
+    /// `set_testmode(false)` you intend to keep effective.
     pub fn set_agc_mode(&self, on: bool) -> Result<(), RtlSdrError> {
+        tracing::info!("set_agc_mode: {}", if on { "on" } else { "off" });
         usb::demod_write_reg(&self.handle, 0, 0x19, if on { 0x25 } else { 0x05 }, 1)
     }
 }

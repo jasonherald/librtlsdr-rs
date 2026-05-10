@@ -561,12 +561,25 @@ impl RtlSdrDevice {
     /// Set RTL and/or tuner crystal frequencies.
     ///
     /// Ports `rtlsdr_set_xtal_freq`.
+    ///
+    /// # Sentinel: pass `0` to leave a value unchanged
+    ///
+    /// `rtl_freq == 0` skips the RTL-side update; `tuner_freq == 0`
+    /// resets the tuner xtal to track the (current) RTL xtal value
+    /// rather than installing a literal 0 Hz crystal. This matches
+    /// the C upstream's `rtlsdr_set_xtal_freq` semantics — pass `0`
+    /// to mean "don't change this side." Per audit issue #18.
     pub fn set_xtal_freq(&mut self, rtl_freq: u32, tuner_freq: u32) -> Result<(), RtlSdrError> {
         if rtl_freq > 0 && (rtl_freq < MIN_RTL_XTAL_FREQ || rtl_freq > MAX_RTL_XTAL_FREQ) {
             return Err(RtlSdrError::InvalidParameter(format!(
                 "RTL xtal freq out of range: {rtl_freq}"
             )));
         }
+
+        tracing::info!(
+            "set_xtal_freq: rtl={rtl_freq} Hz, tuner={tuner_freq} Hz \
+             (rtl 0 = unchanged; tuner 0 = follow current RTL xtal)"
+        );
 
         if rtl_freq > 0 && self.rtl_xtal != rtl_freq {
             self.rtl_xtal = rtl_freq;

@@ -353,7 +353,15 @@ pub fn init_baseband(
     demod_write_reg(handle, 1, 0x15, 0x00, 1)?;
     demod_write_reg(handle, 1, 0x16, 0x0000, 2)?;
 
-    // Clear both DDC shift and IF frequency registers
+    // Clear both DDC shift and IF frequency registers (0x16..=0x1b).
+    //
+    // Note: the 2-byte write to 0x16 immediately above already
+    // covers both 0x16 and 0x17 (a 2-byte write straddles the
+    // boundary), so this loop redundantly re-clears 0x16 + 0x17.
+    // Kept for parity with the upstream C `rtlsdr_init_baseband`
+    // which has the same redundancy — don't "optimise" the loop
+    // to start at i=2 without changing the C upstream first.
+    // Per audit issue #18.
     for i in 0..6 {
         demod_write_reg(handle, 1, 0x16 + i, 0x00, 1)?;
     }
