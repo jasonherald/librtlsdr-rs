@@ -478,10 +478,14 @@ impl RtlSdrDevice {
     /// device hasn't been probed or the IC isn't in our
     /// known-tuners list).
     ///
-    /// **Manual gain mode must be enabled** for `set_tuner_gain` to
-    /// take effect (the example calls `set_tuner_gain_mode(true)`
-    /// first). In AGC mode the tuner picks its own gain and ignores
-    /// the value you set.
+    /// `closest_gain` itself is a pure static-table lookup — it
+    /// doesn't touch the device, doesn't depend on AGC state,
+    /// and is safe to call before `open()` if you have a
+    /// [`crate::TunerType`] in hand. **Setting the gain is
+    /// what requires manual mode** — the example below enables
+    /// manual mode just before `set_tuner_gain` for that reason,
+    /// not because `closest_gain` cares. In AGC mode the tuner
+    /// picks its own gain and ignores `set_tuner_gain`.
     ///
     /// **Since 0.2 (per #16):** returns `Option<i32>` instead of
     /// `i32`. In 0.1.x this method returned `0` for both "no gain
@@ -493,9 +497,12 @@ impl RtlSdrDevice {
     /// # use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
     /// # fn main() -> Result<(), RtlSdrError> {
     /// let mut dev = RtlSdrDevice::open(0)?;
-    /// dev.set_tuner_gain_mode(true)?;
-    /// // User picked "around 15 dB" in the UI; pick the actual step.
+    /// // User picked "around 15 dB" in the UI; pick the actual step
+    /// // from the device's gain table (pure lookup, no I/O).
     /// if let Some(step) = dev.closest_gain(150) {
+    ///     // Enable manual mode just before applying the gain — AGC
+    ///     // mode would ignore the next call.
+    ///     dev.set_tuner_gain_mode(true)?;
     ///     dev.set_tuner_gain(step)?;
     /// }
     /// # Ok(())
