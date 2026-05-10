@@ -45,8 +45,18 @@ const ASYNC_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 ///
 /// 100 reads × the `ASYNC_POLL_TIMEOUT` upper bound (1 s) =
 /// ~100 s worst-case before the loop fuses. Healthy devices
-/// reset the counter on the first `Ok(n > 0)`. Per audit
-/// issue #12 / "Reconcile Ok(0) semantics."
+/// reset the counter on the first `Ok(n > 0)`.
+///
+/// **Caveat (per audit pass-2 #69):** the counter is incremented
+/// only on `Ok(0)` — `Err(Timeout)` does NOT increment it. A
+/// degenerate device alternating `Ok(0), Timeout, Ok(0),
+/// Timeout, ...` would never fuse because each Timeout looks
+/// like a "no progress" event but doesn't count. The "100 × 1 s
+/// ≈ 100 s worst-case" bound holds only for pure-Ok(0) streams;
+/// interleaved Timeouts can stretch it indefinitely. Callers who
+/// care about a strict cancel deadline should set their own
+/// outer timeout (e.g. `tokio::time::timeout`) on top of this
+/// loop. Per audit issue #12 / "Reconcile Ok(0) semantics."
 const MAX_CONSECUTIVE_ZERO_READS: u32 = 100;
 
 /// Internal bulk-read helper shared by [`RtlSdrDevice::read_sync`]
