@@ -148,15 +148,23 @@ whichever async runtime you ship against:
 
 ```bash
 # tokio Stream variant
-cargo test --features tokio --test live_streaming -- --ignored
+cargo test --features tokio --test live_streaming      -- --ignored --test-threads=1
 
 # smol Stream variant
-cargo test --features smol  --test live_streaming_smol -- --ignored
+cargo test --features smol  --test live_streaming_smol -- --ignored --test-threads=1
 ```
 
-Both files mirror the same three scenarios (smoke, parent-retunes-
-during-stream, dropping-stream-stops-worker) so the runtime
-backends stay at parity. Neither runs in CI (no hardware).
+`--test-threads=1` is **important**: cargo's default parallel
+test runner has multiple threads each call `RtlSdrDevice::open(0)`
+and only one wins the USB-interface claim — the rest see
+`Resource busy` and skip via `open_or_skip`'s defensive fallback.
+Without `--test-threads=1` the suite reports `5 passed` even
+though only 1 test actually exercised hardware. The skip messages
+do point at this when they fire (per audit issue #31).
+
+Both test files mirror the same three scenarios (smoke, parent-
+retunes-during-stream, dropping-stream-stops-worker) so the
+runtime backends stay at parity. Neither runs in CI (no hardware).
 
 ## License
 

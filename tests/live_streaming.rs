@@ -28,7 +28,7 @@
 
 use std::time::Duration;
 
-use librtlsdr_rs::{RtlSdrDevice, RtlSdrError};
+use librtlsdr_rs::{RtlSdrDevice, RtlSdrError, rusb};
 
 /// Helper: open device 0 and configure for FM broadcast tuning.
 /// Skips the test by returning `None` if no device is plugged
@@ -60,7 +60,23 @@ fn open_or_skip(test_name: &str) -> Option<RtlSdrDevice> {
             Some(dev)
         }
         Err(e) => {
-            eprintln!("[{test_name}] open failed: {e}; skipping");
+            // Distinguish "device exists but is held by another
+            // process" from a generic open failure. The most common
+            // first-time-runner trip is `cargo test` running tests
+            // in parallel — multiple test threads each try to
+            // `RtlSdrDevice::open(0)` and only one wins; the rest
+            // see `Resource busy`. Point the diagnostic at the fix.
+            // Per audit issue #31.
+            if matches!(e, RtlSdrError::Usb(rusb::Error::Busy)) {
+                eprintln!(
+                    "[{test_name}] device busy: {e}; skipping. \
+                     If running these tests, pass `--test-threads=1` to serialize \
+                     them (parallel access to USB interface 0 collides), or check \
+                     for another rtl-sdr process holding the device."
+                );
+            } else {
+                eprintln!("[{test_name}] open failed: {e}; skipping");
+            }
             None
         }
     }

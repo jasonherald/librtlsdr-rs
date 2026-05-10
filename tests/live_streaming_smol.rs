@@ -26,7 +26,7 @@
 
 use std::time::Duration;
 
-use librtlsdr_rs::RtlSdrDevice;
+use librtlsdr_rs::{RtlSdrDevice, RtlSdrError, rusb};
 
 /// Helper: open device 0 and configure for FM broadcast tuning.
 /// Skips the test by returning `None` if no device is plugged
@@ -61,7 +61,19 @@ fn open_or_skip(test_name: &str) -> Option<RtlSdrDevice> {
             Some(dev)
         }
         Err(e) => {
-            eprintln!("[{test_name}] open failed: {e}; skipping");
+            // Same Busy-vs-generic-open distinction as the tokio
+            // sibling file — see its comment for the rationale.
+            // Per audit issue #31.
+            if matches!(e, RtlSdrError::Usb(rusb::Error::Busy)) {
+                eprintln!(
+                    "[{test_name}] device busy: {e}; skipping. \
+                     If running these tests, pass `--test-threads=1` to serialize \
+                     them (parallel access to USB interface 0 collides), or check \
+                     for another rtl-sdr process holding the device."
+                );
+            } else {
+                eprintln!("[{test_name}] open failed: {e}; skipping");
+            }
             None
         }
     }
