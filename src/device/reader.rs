@@ -130,6 +130,16 @@ impl Drop for ReaderBusyGuard {
 #[derive(Clone)]
 pub struct RtlSdrReader {
     pub(crate) handle: Arc<rusb::DeviceHandle<rusb::GlobalContext>>,
+    /// Per-device reader-busy flag (cloned from the parent
+    /// [`RtlSdrDevice::reader_busy`]). Acquired via
+    /// [`ReaderBusyGuard::try_acquire`] at the top of every
+    /// bulk-read entry point on this reader to enforce single-active-
+    /// reader. Per #7.
+    //
+    // `dead_code` allow lifts in the next commit, when the bulk-read
+    // entry points start calling `ReaderBusyGuard::try_acquire(&self.busy)`.
+    #[allow(dead_code)]
+    pub(crate) busy: Arc<AtomicBool>,
 }
 
 impl RtlSdrReader {

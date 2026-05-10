@@ -67,6 +67,11 @@ use crate::usb;
 /// crate-level docs.
 pub struct RtlSdrDevice {
     pub(crate) handle: std::sync::Arc<rusb::DeviceHandle<rusb::GlobalContext>>,
+    /// Per-device flag enforcing at most one active bulk-read on USB
+    /// endpoint 0x81 across the device + all `RtlSdrReader` clones.
+    /// Cloned into every reader; acquired via [`reader::ReaderBusyGuard`]
+    /// at the top of each bulk-read entry point. Per #7.
+    pub(crate) reader_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(crate) tuner_type: TunerType,
     pub(crate) tuner: Option<Box<dyn Tuner>>,
 
@@ -148,6 +153,7 @@ impl RtlSdrDevice {
     pub fn reader(&self) -> RtlSdrReader {
         RtlSdrReader {
             handle: std::sync::Arc::clone(&self.handle),
+            busy: std::sync::Arc::clone(&self.reader_busy),
         }
     }
 
@@ -170,6 +176,7 @@ impl RtlSdrDevice {
 
         let mut dev = Self {
             handle: std::sync::Arc::new(handle),
+            reader_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tuner_type: TunerType::Unknown,
             tuner: None,
             rtl_xtal: DEF_RTL_XTAL_FREQ,
