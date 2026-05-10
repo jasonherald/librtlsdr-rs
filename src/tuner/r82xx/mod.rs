@@ -46,7 +46,6 @@ pub struct R82xxPriv {
     pub(crate) int_freq: u32,
     pub(crate) fil_cal_code: u8,
     pub(crate) input: u8,
-    pub(crate) has_lock: bool,
     pub(crate) init_done: bool,
     pub(crate) bw: u32,
 
@@ -69,7 +68,6 @@ impl R82xxPriv {
             int_freq: 0,
             fil_cal_code: 0,
             input: 0,
-            has_lock: false,
             init_done: false,
             bw: 0,
             is_blog_v4: false,
@@ -208,12 +206,13 @@ impl R82xxPriv {
             self.write_reg_mask(handle, 0x0f, 0x04, 0x04)?;
             self.write_reg_mask(handle, 0x10, 0x00, 0x03)?;
 
-            self.set_pll(handle, filt_cal_lo * 1000)?;
-            if !self.has_lock {
-                return Err(RtlSdrError::Tuner(
-                    "PLL lock failed during filter calibration".to_string(),
-                ));
-            }
+            // map_err preserves the "during filter calibration"
+            // context — the inner Err already names the freq.
+            // Pre-#11 this was a `set_pll(...)?` + `if !self.has_lock`
+            // post-check; #11 removed the field, so the post-check
+            // disappears and the freq lives in the Err message.
+            self.set_pll(handle, filt_cal_lo * 1000)
+                .map_err(|e| RtlSdrError::Tuner(format!("filter calibration: {e}")))?;
 
             // Start/stop trigger
             self.write_reg_mask(handle, 0x0b, 0x10, 0x10)?;
@@ -320,13 +319,11 @@ impl Tuner for R82xxPriv {
         let lo_freq = upconvert_freq.saturating_add(self.int_freq);
 
         self.set_mux(handle, lo_freq)?;
+        // Pre-#11 set_pll returned Ok(()) on lock failure and set
+        // `has_lock = false`, requiring this post-check. Now the
+        // failure is propagated as Err — the inner message names
+        // the lo_freq value.
         self.set_pll(handle, lo_freq)?;
-
-        if !self.has_lock {
-            return Err(RtlSdrError::Tuner(format!(
-                "PLL lock failed for freq {freq} Hz"
-            )));
-        }
 
         // RTL-SDR Blog V4 band switching and notch filter logic
         if self.is_blog_v4 {
@@ -568,7 +565,6 @@ mod tests {
         assert_eq!(priv_.i2c_addr, 0x34);
         assert_eq!(priv_.xtal, 28_800_000);
         assert!(!priv_.init_done);
-        assert!(!priv_.has_lock);
     }
 
     #[test]
