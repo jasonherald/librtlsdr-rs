@@ -9,7 +9,7 @@ repository = "https://github.com/jasonherald/librtlsdr-rs"
 homepage = "https://github.com/jasonherald/librtlsdr-rs"
 documentation = "https://docs.rs/librtlsdr-rs"
 readme = "README.md"
-keywords = ["sdr", "rtl-sdr", "rtl2832u", "rtlsdr", "radio"]
+keywords = ["sdr", "rtl-sdr", "rtlsdr", "radio", "iq"]
 categories = ["hardware-support", "science", "embedded"]
 
 # Files intentionally kept out of the published artifact: CI / dev-tool config,

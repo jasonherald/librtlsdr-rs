@@ -64,7 +64,11 @@ let worker = std::thread::spawn(move || {
 });
 
 // Parent retains control of the device while the reader streams —
-// separate USB endpoints, no rusb-level conflict.
+// reader uses bulk endpoint 0x81, `set_center_freq` uses control
+// transfers on endpoint 0x00, so libusb sees no conflict. See the
+// crate-level "USB context + threading" docs for the full safety
+// caveats. The runtime busy-flag (#7) prevents two readers, but
+// parent control transfers are a separate path.
 device.set_center_freq(101_000_000)?;
 device.set_tuner_gain(150)?;
 # let _ = worker;
