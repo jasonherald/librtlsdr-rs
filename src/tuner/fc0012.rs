@@ -147,7 +147,13 @@ const BW_7MHZ_HZ: u32 = 7_000_000;
 /// Modified register 0x05 lower bits for Realtek demod.
 const REALTEK_DEMOD_BITS: u8 = 0x07;
 
-/// LNA gain register mask (bits 0-4).
+/// LNA gain register mask: preserves bits 5-7 (`0xe0`), masks
+/// off bits 0-4 (the LNA gain bits this constant is named for).
+/// Used in `read_modify_write & !LNA_GAIN_MASK | new_lna_gain`
+/// shape — the *gain bits* live in 0-4, the mask names the
+/// preserved-from-prior-state bits at 5-7. Pre-#72 the comment
+/// said "bits 0-4" which described the gain-bit position
+/// without making the keep-vs-clear semantics clear.
 const LNA_GAIN_MASK: u8 = 0xe0;
 
 // ---------------------------------------------------------------------------

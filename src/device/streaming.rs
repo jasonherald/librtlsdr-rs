@@ -19,8 +19,34 @@ use crate::usb;
 use super::RtlSdrDevice;
 use super::reader::ReaderBusyGuard;
 
-/// Callback type for async reading.
-/// Called with a byte slice of IQ data for each completed bulk transfer.
+/// Callback type for async reading. Called with a byte slice of
+/// IQ data for each completed bulk transfer inside
+/// [`RtlSdrDevice::read_async_blocking`]'s loop.
+///
+/// # Callback contract (per audit pass-2 #71)
+///
+/// The callback runs on the thread that called
+/// [`RtlSdrDevice::read_async_blocking`], inside the read loop,
+/// while the reader-busy flag is held. To keep the loop
+/// responsive to the cancel flag and the device's bulk-read
+/// cadence:
+///
+/// - **Don't block on shared state held outside the callback.**
+///   Acquiring a mutex the cancel-flag setter also touches will
+///   deadlock the cancel.
+/// - **Don't perform long synchronous I/O.** The next bulk read
+///   doesn't fire until the callback returns; consumer-side
+///   blocking shows up as bytes-per-second drops.
+/// - **Don't panic under `panic = "abort"`.** The
+///   [`super::reader::ReaderBusyGuard`]'s Drop releases the
+///   busy-flag during normal unwind, but `abort` skips Drop
+///   and leaves the flag stuck `true` for the device's
+///   lifetime. Standard `panic = "unwind"` (the default) is
+///   safe because Rust's RAII handles the release.
+///
+/// In short: treat the callback as a buffer-handoff site, not a
+/// processing site. Push the bytes into a queue / channel /
+/// ringbuffer and do the actual work elsewhere.
 pub type ReadAsyncCb = Box<dyn FnMut(&[u8]) + Send>;
 
 /// Maximum allowed buffer length for async reads (16 MB).
@@ -45,8 +71,18 @@ const ASYNC_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 ///
 /// 100 reads × the `ASYNC_POLL_TIMEOUT` upper bound (1 s) =
 /// ~100 s worst-case before the loop fuses. Healthy devices
-/// reset the counter on the first `Ok(n > 0)`. Per audit
-/// issue #12 / "Reconcile Ok(0) semantics."
+/// reset the counter on the first `Ok(n > 0)`.
+///
+/// **Caveat (per audit pass-2 #69):** the counter is incremented
+/// only on `Ok(0)` — `Err(Timeout)` does NOT increment it. A
+/// degenerate device alternating `Ok(0), Timeout, Ok(0),
+/// Timeout, ...` would never fuse because each Timeout looks
+/// like a "no progress" event but doesn't count. The "100 × 1 s
+/// ≈ 100 s worst-case" bound holds only for pure-Ok(0) streams;
+/// interleaved Timeouts can stretch it indefinitely. Callers who
+/// care about a strict cancel deadline should set their own
+/// outer timeout (e.g. `tokio::time::timeout`) on top of this
+/// loop. Per audit issue #12 / "Reconcile Ok(0) semantics."
 const MAX_CONSECUTIVE_ZERO_READS: u32 = 100;
 
 /// Internal bulk-read helper shared by [`RtlSdrDevice::read_sync`]
@@ -162,6 +198,19 @@ impl RtlSdrDevice {
     /// but neither has the complete IQ stream. Only use this
     /// escape hatch if you serialize bulk reads yourself (one
     /// worker thread at a time on endpoint 0x81). Per #7.
+    ///
+    /// # Disconnect detection
+    ///
+    /// Bypassing the typed surface also bypasses the
+    /// `NoDevice → DeviceLost` translation that
+    /// [`Self::read_sync`] / [`super::RtlSdrReader::read_sync`]
+    /// perform internally — your raw `read_bulk` calls will
+    /// surface `rusb::Error::NoDevice` (and on Linux,
+    /// `rusb::Error::Pipe` / `Io` mid-flight) directly. Use
+    /// [`crate::RtlSdrError::is_disconnected`] to classify
+    /// rusb errors against the same disconnect-set the typed
+    /// surface uses; pre-#43 (0.2.1) consumers had to maintain
+    /// their own classifier. Per audit pass-2 #67.
     pub fn usb_handle(&self) -> std::sync::Arc<rusb::DeviceHandle<rusb::GlobalContext>> {
         std::sync::Arc::clone(&self.handle)
     }

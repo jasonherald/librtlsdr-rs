@@ -56,7 +56,14 @@ impl R82xxPriv {
         let mut div_num: u8 = 0;
 
         while mix_div <= 64 {
-            if (freq_khz * mix_div) >= vco_min && (freq_khz * mix_div) < vco_max {
+            // Widened to u64 so the multiplication stays
+            // safe-by-construction outside the in-spec range.
+            // Today `freq_khz ≤ 4.29M kHz` and `mix_div ≤ 64`,
+            // so the u32 product (max ~274M) fits comfortably —
+            // but if `mix_div` ever grows past 67, silent
+            // wraparound. Per audit pass-2 #64.
+            let mix_freq = u64::from(freq_khz) * u64::from(mix_div);
+            if mix_freq >= u64::from(vco_min) && mix_freq < u64::from(vco_max) {
                 let mut div_buf = mix_div;
                 while div_buf > 2 {
                     div_buf >>= 1;
@@ -105,15 +112,35 @@ impl R82xxPriv {
         let nint = (vco_div / 65536) as u32;
         let sdm = (vco_div % 65536) as u32;
 
-        if nint < 13 || nint > ((128 / u32::from(vco_power_ref)) - 1) {
+        // Split the nint-range check into two diagnostics so a
+        // diagnostic-driven debugging session can tell which
+        // boundary failed (low-frequency unreachable vs
+        // high-frequency unreachable). Per audit pass-2 #64.
+        if nint < 13 {
             return Err(TunerError::PllProgrammingFailed {
                 backend: "R82xx",
                 freq_hz: freq,
-                reason: "PLL nint out of range",
+                reason: "PLL nint below 13 (frequency too low at this divider)",
+            }
+            .into());
+        }
+        let nint_max = (128 / u32::from(vco_power_ref)) - 1;
+        if nint > nint_max {
+            return Err(TunerError::PllProgrammingFailed {
+                backend: "R82xx",
+                freq_hz: freq,
+                reason: "PLL nint above max (frequency too high at this divider)",
             }
             .into());
         }
 
+        // u8 truncation casts: `nint <= nint_max` (max 63 for
+        // R820T at vco_power_ref=2; max 127 for R828D at
+        // vco_power_ref=1), so `(nint - 13) / 4` fits in u8 by
+        // a wide margin. The debug_assert pins the implicit
+        // bound so a future tweak to the upper guard above
+        // can't silently make this truncate. Per audit pass-2 #64.
+        debug_assert!(nint < 13 + 4 * 64, "ni cast assumes nint - 13 < 256");
         let ni = ((nint - 13) / 4) as u8;
         let si = (nint - 4 * u32::from(ni) - 13) as u8;
 

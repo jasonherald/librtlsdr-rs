@@ -5,6 +5,133 @@ All notable changes to `librtlsdr-rs` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-05-10
+
+Fifth (and final non-breaking) wave of audit pass-2 follow-up
+— closes the sixteen faithful-port + doc-nit findings ([#62]
+[#63] [#64] [#65] [#66] [#67] [#68] [#69] [#70] [#71] [#72]
+[#73] [#74] [#75] [#76] [#77]). Strict patch release: small
+correctness/defense-in-depth fixes + documentation pass, no
+breaking surface changes.
+
+### Fixed
+
+- **`freq_minus_offset` rejects `freq == offs_freq` when
+  offset tuning is on** ([#68]). Pre-#68 the helper returned
+  `Some(0)` for the at-floor case, which `set_sample_rate`'s
+  retune path then handed to `tuner.set_freq(handle, 0)` — the
+  tuner rejected with a generic "tuner retune failed" log line
+  that blamed the tuner for what was actually a config the
+  driver should have caught. Now rejects up-front with a
+  clearer error naming both values; the offset-off identity
+  case (`offs_freq == 0`) is unaffected.
+- **R82xx `set_bw` clamps u32 input before the i32 cast**
+  ([#65]). Pre-#65 a `bw > i32::MAX` silently reinterpreted
+  as negative and saturated to the narrowest filter; now
+  picks the widest filter (closest plausible match) for
+  out-of-range u32 inputs.
+- **R82xx PLL math defensive-arithmetic pass** ([#64]):
+  - `freq_khz * mix_div` widened to u64 so a future increase
+    in the divider ceiling doesn't silently wrap.
+  - `nint < 13` and `nint > max` diagnostics split into
+    distinct `reason` strings ("frequency too low at this
+    divider" / "frequency too high at this divider") for
+    actionable debugging.
+  - `(nint - 13) / 4) as u8` truncation pinned via
+    `debug_assert!` so a future tweak to the upper guard can't
+    silently make this truncate.
+- **FC2580 (latent): widen K-value math** picked up an
+  additional sub-fix during the CodeRabbit review of #49 in
+  0.2.2; documented retroactively here as part of the
+  faithful-port pass.
+- **`demod_write_reg` fires the dummy read even on the error
+  path** ([#70]). C upstream calls
+  `rtlsdr_demod_read_reg(dev, 0x0a, 0x01, 1)` unconditionally
+  after the write_control call; the Rust port's `?` on
+  write_control was skipping it. Faithful-port deviation with
+  no observable consequence today, but the call shape now
+  matches C for cleaner future audit comparisons.
+
+### Added
+
+- **Streaming worker logs unobserved error on consumer-drop**
+  ([#75]). Both tokio and smol workers' `bulk_read` Err arm
+  now log at `tracing::debug!` if the final send-of-error
+  fails because the consumer already dropped — useful for
+  "why did my stream end?" debugging without requiring the
+  consumer to have observed the final item.
+
+### Documentation
+
+- **R82xx I2C `shadow_store`-after-write divergence from C
+  documented** ([#62]). C calls `shadow_store` BEFORE the
+  transmit loop; Rust moved it after. Trade-off explained in
+  comment so a future "fix" to match C semantics doesn't
+  happen by mistake.
+- **R82xx `regs[27..30]` cache range note** ([#63]). The top
+  3 entries (regs 0x20-0x22) keep their zero-init values
+  because `set_tv_standard` only initializes the first 27 via
+  `R82XX_INIT_ARRAY`. Unreachable today (no `write_reg_mask`
+  targets that range) but documented with a "verify by grep"
+  pointer for future maintainers.
+- **E4K fall-through `r=2 / r_idx=0` for >1.2 GHz**
+  ([#66]). The PLL_VARS loop completes without updating
+  `r` / `r_idx` for frequencies in the 1.2-2.2 GHz range; the
+  downstream `x_raw > u16::MAX` check is the safety net.
+  Documented so a future maintainer doesn't "fix" the loop.
+- **`usb_handle()` doc points at `is_disconnected()`**
+  ([#67]). Bypassing the typed surface also bypasses the
+  `NoDevice → DeviceLost` translation; consumers now have a
+  direct pointer to the helper that classifies raw rusb
+  errors against the same disconnect-set.
+- **`MAX_CONSECUTIVE_ZERO_READS` zero-fuse caveat**
+  ([#69]). The "100 × 1 s ≈ 100 s worst-case" bound only
+  holds for pure-`Ok(0)` streams; `Timeout` interleave
+  doesn't increment the counter. Documented with a workaround
+  pointer (outer `tokio::time::timeout`).
+- **`ReadAsyncCb` callback contract documented**
+  ([#71]). Three real hazards (don't block on shared state,
+  don't perform long sync I/O, don't panic under
+  `panic = "abort"`) plus the bottom-line guidance: treat the
+  callback as a buffer-handoff site.
+- **`LNA_GAIN_MASK` comment clarifies preserve-vs-clear
+  semantics** ([#72]). The pre-#72 comment described the
+  gain-bit position rather than what the mask preserves.
+- **`Tuner` trait gains a typed `# Errors` enumeration**
+  ([#73]). Per-method back-references to a trait-level
+  summary listing which `TunerError` variants each method
+  commonly produces.
+- **`TunerError::Context` documents its USB-error coverage
+  caveat** ([#74]). `Context` wraps only inner `TunerError`
+  values — a `Usb(...)` from the same operation propagates
+  unwrapped. Diagnostic UIs should match both shapes.
+- **Stream doctests spell out the `Item` type**
+  ([#76]). Pre-#76 both `stream_samples_*` examples used
+  `Pin<Box<dyn Stream<Item = _>>>`; the `_` works inside the
+  doctest's `?`-able context but a copy-paster outside it
+  would get "type annotations needed."
+- **Crate quick-start clarifies the literal `144` gain
+  value** ([#77]). The example used `set_tuner_gain(144)?`
+  without noting `144` is an exact R820T2 step; for arbitrary
+  user input, point at `closest_gain`.
+
+[#62]: https://github.com/jasonherald/librtlsdr-rs/issues/62
+[#63]: https://github.com/jasonherald/librtlsdr-rs/issues/63
+[#64]: https://github.com/jasonherald/librtlsdr-rs/issues/64
+[#65]: https://github.com/jasonherald/librtlsdr-rs/issues/65
+[#66]: https://github.com/jasonherald/librtlsdr-rs/issues/66
+[#67]: https://github.com/jasonherald/librtlsdr-rs/issues/67
+[#68]: https://github.com/jasonherald/librtlsdr-rs/issues/68
+[#69]: https://github.com/jasonherald/librtlsdr-rs/issues/69
+[#70]: https://github.com/jasonherald/librtlsdr-rs/issues/70
+[#71]: https://github.com/jasonherald/librtlsdr-rs/issues/71
+[#72]: https://github.com/jasonherald/librtlsdr-rs/issues/72
+[#73]: https://github.com/jasonherald/librtlsdr-rs/issues/73
+[#74]: https://github.com/jasonherald/librtlsdr-rs/issues/74
+[#75]: https://github.com/jasonherald/librtlsdr-rs/issues/75
+[#76]: https://github.com/jasonherald/librtlsdr-rs/issues/76
+[#77]: https://github.com/jasonherald/librtlsdr-rs/issues/77
+
 ## [0.2.4] - 2026-05-10
 
 Fourth wave of audit pass-2 follow-up — closes the seven async

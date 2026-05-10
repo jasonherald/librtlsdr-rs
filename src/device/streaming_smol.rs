@@ -82,7 +82,11 @@ impl RtlSdrReader {
     /// dev.reset_buffer()?;
     /// let reader = dev.reader();
     /// let stream = reader.stream_samples_smol(262_144).map_err(|boxed| boxed.0)?;
-    /// let mut stream: Pin<Box<dyn Stream<Item = _>>> = Box::pin(stream);
+    /// // Item type spelled out so the snippet is copy-paste-friendly
+    /// // outside of the `?`-able context that gives the `_` enough
+    /// // inference signal here.
+    /// let mut stream: Pin<Box<dyn Stream<Item = Result<Vec<u8>, librtlsdr_rs::RtlSdrError>>>> =
+    ///     Box::pin(stream);
     /// # Ok(())
     /// # }
     /// ```
@@ -156,7 +160,19 @@ impl RtlSdrReader {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send_blocking(Err(e));
+                        // Mirror of the tokio path: log a
+                        // debug breadcrumb if the send fails
+                        // because the consumer already dropped,
+                        // so "why did my stream end?" debugging
+                        // doesn't depend on the consumer having
+                        // observed the final item. Per audit
+                        // pass-2 #75.
+                        if let Err(unsent) = tx.send_blocking(Err(e)) {
+                            tracing::debug!(
+                                "smol stream worker exiting with unobserved error: {:?}",
+                                unsent.into_inner()
+                            );
+                        }
                         return;
                     }
                 }

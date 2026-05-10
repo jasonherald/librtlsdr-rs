@@ -91,7 +91,27 @@ impl R82xxPriv {
             pos += size;
         }
 
-        // Update shadow only after all writes succeed
+        // Update shadow only after all writes succeed.
+        //
+        // **Deliberate divergence from C upstream** (per audit
+        // pass-2 #62): C's `r82xx_write` calls `shadow_store`
+        // BEFORE the do/while I2C transmit loop
+        // (`tuner_r82xx.c:282`). Moving it after gives us a
+        // tighter shadow-vs-hardware invariant on first-byte
+        // failure (cache reflects nothing, hardware unchanged)
+        // at the cost of a different skew on multi-byte partial
+        // failure (some bytes in hardware, cache reflects
+        // nothing of the burst). The Rust shape is preferable
+        // because the multi-byte case requires `max_i2c_msg_len
+        // < val.len()` AND a transient I2C failure mid-burst
+        // (extremely rare); the all-or-nothing path is the
+        // common case.
+        //
+        // The module doc says "ports `shadow_store`" — that
+        // describes function-level fidelity, not call-order
+        // fidelity to the bug-for-bug C semantics. This comment
+        // exists so future maintainers don't "fix" the order
+        // back to C-style.
         self.shadow_store(reg, val);
 
         Ok(())

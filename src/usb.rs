@@ -166,6 +166,16 @@ pub fn demod_write_reg(
     }
     data[1] = (val & 0xff) as u8;
 
+    // Capture without `?` so the dummy read fires even on
+    // transport failure — C upstream's `rtlsdr_demod_write_reg`
+    // calls `rtlsdr_demod_read_reg(dev, 0x0a, 0x01, 1)`
+    // unconditionally after the write_control call. Pre-#70
+    // (0.2.4 and earlier) the `?` early-returned and skipped
+    // the dummy read on error, a quiet faithful-port
+    // deviation. Failed-write paths are rare so this had no
+    // observable consequence today, but keeping the call shape
+    // matched to C makes future audit comparisons cleaner. Per
+    // audit pass-2 #70.
     let r = handle.write_control(
         CTRL_OUT,
         0,
@@ -173,11 +183,13 @@ pub fn demod_write_reg(
         index,
         &data[..len as usize],
         ctrl_timeout(),
-    )?;
+    );
 
-    // Dummy read after write (matches C implementation)
+    // Dummy read after write (matches C implementation, fires
+    // even on write_control error path — see comment above).
     let _ = demod_read_reg(handle, 0x0a, 0x01);
 
+    let r = r?;
     if r != len as usize {
         // Demod writes don't use the `Block` dispatch (they go
         // through a page+addr scheme); tag with `Block::Demod`
