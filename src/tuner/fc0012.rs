@@ -379,6 +379,26 @@ impl Fc0012Tuner {
         let mut am = xdiv - (8 * pm);
 
         if am < 2 {
+            // Guard against pm underflow (xdiv < 8 → pm == 0).
+            // The C upstream (`tuner_fc0012.c:217-220`) wraps pm to
+            // 255 via `uint8_t pm--`, then `pm > 31` is true and
+            // `reg[1] = am + 8 * (255 - 31)` casts to u8 = `am`,
+            // and `reg[2] = 31` — both pass the downstream
+            // validation despite being garbage. The Rust panic-on-
+            // overflow in debug actually catches this; in release
+            // it silently wraps and matches the C bug. Either way
+            // the function returns Ok with invalid PLL params.
+            //
+            // Catch the underflow explicitly: in practice xdiv is
+            // always large (≥70 for valid frequencies) so this
+            // path is unreachable from valid inputs, but a bus
+            // glitch producing a malformed xdiv shouldn't silently
+            // produce wrong PLL programming. Per audit #14.
+            if pm == 0 {
+                return Err(RtlSdrError::Tuner(format!(
+                    "FC0012: PLL inputs out of range (xdiv={xdiv}) for {freq} Hz"
+                )));
+            }
             am += 8;
             pm -= 1;
         }

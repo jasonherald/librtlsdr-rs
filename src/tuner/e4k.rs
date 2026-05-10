@@ -919,21 +919,37 @@ impl E4kTuner {
 
     /// Set the LNA gain.
     ///
-    /// Ports `e4k_set_lna_gain`. Gain is in tenths of dB.
+    /// Ports `e4k_set_lna_gain` from the C upstream, with one
+    /// deliberate divergence: the C version requires an exact
+    /// match against the [`LNA_GAIN`] table and returns `-EINVAL`
+    /// otherwise. This Rust port snaps to the closest available
+    /// entry (matching the same `min_by_key`-with-`i64`-promotion
+    /// pattern as `closest_gain_in` in `device::mod`). Per audit
+    /// #14: the caller in [`set_gain`] computes
+    /// `gain - mixgain * 10` which doesn't always land on a table
+    /// entry (e.g. `gain=100, mixgain=4 → lna=60` is between the
+    /// `50` and `75` entries); the C exact-match shape would
+    /// reject this with an opaque error. Snap-to-nearest is
+    /// friendlier and matches what the filter selection does
+    /// internally via `closest_arr_idx`.
+    ///
+    /// Gain is in tenths of dB.
     fn set_lna_gain(
         &self,
         handle: &rusb::DeviceHandle<rusb::GlobalContext>,
         gain: i32,
     ) -> Result<(), RtlSdrError> {
-        for &(g, reg_val) in &LNA_GAIN {
-            if g == gain {
-                return self.reg_set_mask(handle, REG_GAIN1, LNA_GAIN_MASK, reg_val);
-            }
-        }
-
-        Err(RtlSdrError::Tuner(format!(
-            "E4K: invalid LNA gain value {gain} (tenths of dB)"
-        )))
+        // i64 promotion avoids `(i32 - i32).abs()` overflow on
+        // pathological inputs (i32::MIN), same hazard
+        // `closest_gain_in` was hardened against in #631 CR round
+        // 1. LNA_GAIN is provably non-empty (13 entries); the
+        // unwrap_or default is unreachable.
+        let (_, reg_val) = LNA_GAIN
+            .iter()
+            .copied()
+            .min_by_key(|&(g, _)| (i64::from(g) - i64::from(gain)).abs())
+            .unwrap_or(LNA_GAIN[0]);
+        self.reg_set_mask(handle, REG_GAIN1, LNA_GAIN_MASK, reg_val)
     }
 
     /// Set the mixer gain (4 or 12 dB).

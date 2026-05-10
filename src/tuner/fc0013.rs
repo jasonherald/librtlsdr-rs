@@ -550,6 +550,14 @@ impl Fc0013Tuner {
         let mut am = xdiv - (8 * pm);
 
         if am < 2 {
+            // Same pm underflow guard as FC0012; see that file's
+            // matching site for the full C-upstream-bug
+            // explanation. Per audit #14.
+            if pm == 0 {
+                return Err(RtlSdrError::Tuner(format!(
+                    "FC0013: PLL inputs out of range (xdiv={xdiv}) for {freq} Hz"
+                )));
+            }
             am += 8;
             pm -= 1;
         }
@@ -773,13 +781,19 @@ impl Tuner for Fc0013Tuner {
         // Mask off LNA gain bits (keep bits 5-7)
         tmp &= LNA_GAIN_MASK;
 
-        // Find the first entry whose gain >= requested, or use the last entry
-        for (i, &(entry_gain, reg_val)) in LNA_GAINS.iter().enumerate() {
-            if entry_gain >= gain || i + 1 == LNA_GAINS.len() {
-                tmp |= reg_val;
-                break;
-            }
-        }
+        // Find the first entry whose gain >= requested, or fall
+        // back to the last entry (highest gain). LNA_GAINS is
+        // provably non-empty, so `last()` always returns Some;
+        // the inner `unwrap_or` is a defensive const default
+        // that's unreachable. Per audit #14 — replaces the
+        // `i + 1 == LNA_GAINS.len()` sentinel that was less
+        // obvious about the "saturate to last" intent.
+        let &(_, reg_val) = LNA_GAINS
+            .iter()
+            .find(|&&(g, _)| g >= gain)
+            .or_else(|| LNA_GAINS.last())
+            .unwrap_or(&LNA_GAINS[0]);
+        tmp |= reg_val;
 
         self.write_reg(handle, REG_LNA_GAIN, tmp)?;
 
