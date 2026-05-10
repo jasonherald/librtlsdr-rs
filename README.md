@@ -143,11 +143,20 @@ blacklist dvb_usb_rtl28xxu
 ## Live hardware tests
 
 A handful of integration tests exercise real USB I/O. They're
-`#[ignore]` by default. Plug in a dongle and run:
+`#[ignore]` by default. Plug in a dongle and run the suite for
+whichever async runtime you ship against:
 
 ```bash
+# tokio Stream variant
 cargo test --features tokio --test live_streaming -- --ignored
+
+# smol Stream variant
+cargo test --features smol  --test live_streaming_smol -- --ignored
 ```
+
+Both files mirror the same three scenarios (smoke, parent-retunes-
+during-stream, dropping-stream-stops-worker) so the runtime
+backends stay at parity. Neither runs in CI (no hardware).
 
 ## License
 
