@@ -5,6 +5,70 @@ All notable changes to `librtlsdr-rs` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-05-10
+
+First wave of audit pass-2 follow-up — closes the four Tier-1
+critical findings ([#39] [#40] [#41] [#42]). Strict patch
+release: pure correctness fixes, no public API surface change.
+
+### Fixed
+
+- **`set_xtal_freq` didn't propagate the new xtal into the tuner
+  driver** ([#39]). The 0.1.x-0.2.0 port updated `self.tun_xtal`
+  and triggered `set_center_freq` for the retune, but never
+  pushed the new value into the backend's internal xtal field —
+  PLL math therefore computed against the stale xtal, measurable
+  as a frequency error after any xtal-correcting `set_xtal_freq`
+  call. C upstream propagates the corrected xtal in the same
+  code path (`librtlsdr.c:752-754`); the Rust
+  `set_freq_correction` already mirrored this with
+  `tuner.set_xtal(get_tuner_xtal())` (audit fix #4) — that
+  pattern is now extended to `set_xtal_freq`.
+- **`dev_lost` flag was structurally dead** ([#40]). Set to
+  `false` once after `init_baseband` and never updated by the
+  runtime — so a hot-unplug let `Drop::drop` happily execute
+  cleanup writes (`set_i2c_repeater`, `tuner.exit`,
+  `deinit_baseband`) against a vanished handle. Each returned
+  `NoDevice`, got logged at `tracing::debug!`, and the user saw
+  a stream of cryptic "register access failed" lines.
+  `RtlSdrDevice::dev_lost: bool` → `Arc<AtomicBool>`, cloned
+  into `RtlSdrReader` so streaming code can update the same
+  flag the parent device's `Drop` reads. `bulk_read` now sets
+  the flag on the `NoDevice → DeviceLost` translation; same
+  side effect added to the inline `NoDevice` arm in
+  `read_async_blocking`. Translation extracted to a pure
+  `translate_bulk_result` helper with 4 unit tests pinning the
+  contract (NoDevice sets, Ok doesn't, Timeout/Pipe/Io/Overflow
+  don't, idempotent).
+- **`set_offset_tuning` partial-state hazard** ([#41]).
+  `self.offs_freq = new_offs_freq` was assigned BEFORE the
+  fallible `set_if_freq(self.offs_freq)?`. On IF-write failure
+  the cache lied about the offset, which then corrupted
+  `freq_minus_offset` math in subsequent `set_center_freq`
+  calls. Same partial-state shape #11 fixed for the
+  `set_*_freq` family — the `set_offset_tuning` site was
+  missed by that pass. Now writes the IF first; cache update
+  follows on success.
+- **R82xx I2C `write` loop infinite-looped on misconfigured
+  `max_i2c_msg_len`** ([#42]). `R82xxConfig::max_i2c_msg_len`
+  is a `pub` field, so a misconfig was a consumer-reachable
+  footgun: `max_msg = 1` gave `size = remaining.min(0) = 0`
+  and the loop never decremented `remaining` (infinite loop);
+  `max_msg = 0` underflowed `max_msg - 1` to `usize::MAX`;
+  `max_msg > buf_capacity` panicked the `self.buf[..size + 1]`
+  slice index. Extracted the chunk-size math to a pure
+  `i2c_chunk_size` helper that clamps `max_msg_len` to
+  `[2, buf_capacity]`. 5 unit tests pin corner cases plus a
+  property test pinning the no-infinite-loop invariant for
+  any `(remaining > 0, max_msg)`. Today every in-tree caller
+  passes `max_msg = 8`, so this is defense-in-depth — the
+  field will eventually be used by an external consumer.
+
+[#39]: https://github.com/jasonherald/librtlsdr-rs/issues/39
+[#40]: https://github.com/jasonherald/librtlsdr-rs/issues/40
+[#41]: https://github.com/jasonherald/librtlsdr-rs/issues/41
+[#42]: https://github.com/jasonherald/librtlsdr-rs/issues/42
+
 ## [0.2.0] - 2026-05-10
 
 First semver-major release. Closes the deferred error-type bundle
