@@ -203,10 +203,11 @@ impl Stream for TokioSampleStream {
 mod tests {
     use super::*;
 
-    // Pin the Stream + Send contract.
+    // Pin the Stream + Send + Unpin contract.
     const _: fn() = || {
         fn assert_stream<T: Stream>() {}
         fn assert_send<T: Send>() {}
+        fn assert_unpin<T: Unpin>() {}
         assert_stream::<TokioSampleStream>();
         assert_send::<TokioSampleStream>();
         // Pin `Item: Send` so a future change to `RtlSdrError`
@@ -215,5 +216,12 @@ mod tests {
         // consumer code that does `tokio::spawn(stream.next())`.
         // Per audit issue #20.
         assert_send::<<TokioSampleStream as Stream>::Item>();
+        // Pin `TokioSampleStream: Unpin` so consumers can use
+        // `stream.next().await` without `Box::pin(stream)` first.
+        // `tokio::sync::mpsc::Receiver` is Unpin, so the parent
+        // struct is Unpin transitively. Pin it explicitly so a
+        // future field-shape change that introduces a `!Unpin`
+        // member fires at compile time. Per audit pass-2 #60.
+        assert_unpin::<TokioSampleStream>();
     };
 }

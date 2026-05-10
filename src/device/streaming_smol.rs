@@ -189,10 +189,33 @@ mod tests {
     const _: fn() = || {
         fn assert_stream<T: Stream>() {}
         fn assert_send<T: Send>() {}
+        fn assert_unpin<T: Unpin>() {}
         assert_stream::<SmolSampleStream>();
         assert_send::<SmolSampleStream>();
         // Item: Send pin — same rationale as the tokio sibling.
         // Per audit issue #20.
         assert_send::<<SmolSampleStream as Stream>::Item>();
+        // Pin `SmolSampleStream: Unpin` so consumers can use
+        // `stream.next().await` without `Box::pin(stream)` first.
+        // The Stream is Unpin only because its inner field is
+        // `Pin<Box<Receiver>>` (Box is always Unpin); if the
+        // file's `BoxedReceiver` indirection comment ever gets
+        // followed and the Receiver is embedded directly,
+        // `SmolSampleStream` would silently become `!Unpin` and
+        // this assertion would fire at compile time. Per audit
+        // pass-2 #60.
+        assert_unpin::<SmolSampleStream>();
     };
+
+    // Pin the `!Unpin` invariant on `async_channel::Receiver`
+    // that the file's `BoxedReceiver` rationale (lines 32-44)
+    // depends on. If a future async-channel release makes
+    // `Receiver: Unpin`, the `Pin<Box<Receiver>>` indirection
+    // becomes a needless allocation and this assertion fires —
+    // at which point the indirection can be dropped (per the
+    // `BoxedReceiver` comment's own pointer to revisit).
+    // Per audit pass-2 #58.
+    static_assertions::assert_not_impl_any!(
+        async_channel::Receiver<()>: Unpin
+    );
 }
