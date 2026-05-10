@@ -679,11 +679,18 @@ impl Fc2580Tuner {
         let n_val = (f_vco / 2) / f_comp;
 
         let f_diff = f_vco - 2 * f_comp * n_val;
-        let f_diff_shifted = f_diff << PLL_K_SHIFT;
-        let f_comp_shifted = (2 * f_comp) >> PLL_PRE_SHIFT_BITS;
-        let mut k_val = f_diff_shifted / f_comp_shifted;
+        // Widen to u64 for the `<< PLL_K_SHIFT` (16) step:
+        // `f_diff < 2 * f_comp ≤ 2 * freq_xtal_khz`, so the shift
+        // overflows u32 once `2 * freq_xtal_khz > 2^16 = 65_536`,
+        // i.e. xtal > 32.768 MHz. Standard RTL2832U xtals are
+        // 28.8 MHz so this doesn't fire today, but the C upstream
+        // operates in `int` (32-bit) with the same latent bug.
+        // Per audit pass-2 #49.
+        let f_diff_shifted: u64 = u64::from(f_diff) << PLL_K_SHIFT;
+        let f_comp_shifted: u64 = (2 * u64::from(f_comp)) >> PLL_PRE_SHIFT_BITS;
+        let mut k_val: u64 = f_diff_shifted / f_comp_shifted;
 
-        if f_diff_shifted - k_val * f_comp_shifted >= (f_comp >> PLL_PRE_SHIFT_BITS) {
+        if f_diff_shifted - k_val * f_comp_shifted >= (u64::from(f_comp) >> PLL_PRE_SHIFT_BITS) {
             k_val += 1;
         }
 
