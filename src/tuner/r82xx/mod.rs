@@ -206,13 +206,20 @@ impl R82xxPriv {
             self.write_reg_mask(handle, 0x0f, 0x04, 0x04)?;
             self.write_reg_mask(handle, 0x10, 0x00, 0x03)?;
 
-            // map_err preserves the "during filter calibration"
-            // context — the inner Err already names the freq.
-            // Pre-#11 this was a `set_pll(...)?` + `if !self.has_lock`
-            // post-check; #11 removed the field, so the post-check
-            // disappears and the freq lives in the Err message.
+            // Add "filter calibration" context to the inner Err
+            // ONLY for `RtlSdrError::Tuner(...)` (which carries a
+            // String we can prefix). Pass `Usb`, `DeviceLost`, etc.
+            // through unchanged so consumers matching on transport
+            // variants (e.g. `Err(Usb(NoDevice))` to detect
+            // disconnect) keep typed handling. Per #11 round 2
+            // (Code Rabbit).
             self.set_pll(handle, filt_cal_lo * 1000)
-                .map_err(|e| RtlSdrError::Tuner(format!("filter calibration: {e}")))?;
+                .map_err(|e| match e {
+                    RtlSdrError::Tuner(msg) => {
+                        RtlSdrError::Tuner(format!("filter calibration: {msg}"))
+                    }
+                    other => other,
+                })?;
 
             // Start/stop trigger
             self.write_reg_mask(handle, 0x0b, 0x10, 0x10)?;
