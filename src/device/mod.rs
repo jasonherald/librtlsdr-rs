@@ -729,6 +729,49 @@ const _: fn() = || {
     assert_send::<RtlSdrDevice>();
 };
 
+/// Manual [`Debug`] impl for [`RtlSdrDevice`] — `#[derive(Debug)]`
+/// can't be used because two fields don't implement `Debug`:
+///
+/// - `handle: Arc<rusb::DeviceHandle<...>>` — `rusb::DeviceHandle`
+///   has no `Debug` impl. Substituted with the `Arc`'s pointer
+///   address as a stable identifier.
+/// - `tuner: Option<Box<dyn Tuner>>` — the `Tuner` trait
+///   (`pub(crate)`) doesn't require `Debug` as a supertrait
+///   (would force all 5 backends to derive it on their large
+///   register arrays for marginal benefit). Substituted with the
+///   tuner-presence boolean alongside the explicit `tuner_type`
+///   field, which already names the backend.
+///
+/// Per audit issue #19: gives consumers `dbg!(&device)` and
+/// `#[derive(Debug)]` on parent structs without leaking the
+/// internal trait shape.
+impl std::fmt::Debug for RtlSdrDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RtlSdrDevice")
+            .field("handle_ptr", &std::sync::Arc::as_ptr(&self.handle))
+            .field("reader_busy", &self.reader_busy)
+            .field("tuner_type", &self.tuner_type)
+            .field("tuner_present", &self.tuner.is_some())
+            .field("rtl_xtal", &self.rtl_xtal)
+            .field("tun_xtal", &self.tun_xtal)
+            .field("rate", &self.rate)
+            .field("freq", &self.freq)
+            .field("bw", &self.bw)
+            .field("offs_freq", &self.offs_freq)
+            .field("corr", &self.corr)
+            .field("gain", &self.gain)
+            .field("direct_sampling", &self.direct_sampling)
+            .field("fir", &self.fir)
+            .field("async_status", &self.async_status)
+            .field("manufact", &self.manufact)
+            .field("product", &self.product)
+            .field("serial", &self.serial)
+            .field("dev_lost", &self.dev_lost)
+            .field("driver_active", &self.driver_active)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{closest_gain_in, try_closest_gain_in};
