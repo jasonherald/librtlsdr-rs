@@ -24,10 +24,10 @@ use futures_core::Stream;
 
 use crate::error::RtlSdrError;
 
+use crate::constants::STREAM_BACKPRESSURE_DEPTH;
+
 use super::RtlSdrReader;
 use super::reader::ReaderBusyGuard;
-
-const STREAM_BACKPRESSURE_DEPTH: usize = 4;
 
 type BoxedReceiver = Pin<Box<async_channel::Receiver<Result<Vec<u8>, RtlSdrError>>>>;
 
