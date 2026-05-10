@@ -156,7 +156,19 @@ impl RtlSdrReader {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send_blocking(Err(e));
+                        // Mirror of the tokio path: log a
+                        // debug breadcrumb if the send fails
+                        // because the consumer already dropped,
+                        // so "why did my stream end?" debugging
+                        // doesn't depend on the consumer having
+                        // observed the final item. Per audit
+                        // pass-2 #75.
+                        if let Err(unsent) = tx.send_blocking(Err(e)) {
+                            tracing::debug!(
+                                "smol stream worker exiting with unobserved error: {:?}",
+                                unsent.into_inner()
+                            );
+                        }
                         return;
                     }
                 }

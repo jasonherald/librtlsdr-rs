@@ -169,7 +169,20 @@ impl RtlSdrReader {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.blocking_send(Err(e));
+                        // If the consumer already dropped, the
+                        // send fails silently — no observer for
+                        // the error. Log a debug breadcrumb so
+                        // a diagnostic-driven debugging session
+                        // can answer "why did my stream end?"
+                        // without depending on the consumer
+                        // having observed the final item. Per
+                        // audit pass-2 #75.
+                        if let Err(unsent) = tx.blocking_send(Err(e)) {
+                            tracing::debug!(
+                                "tokio stream worker exiting with unobserved error: {:?}",
+                                unsent.0
+                            );
+                        }
                         return;
                     }
                 }
