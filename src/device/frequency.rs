@@ -143,6 +143,28 @@ impl RtlSdrDevice {
     /// Set offset tuning mode.
     ///
     /// Ports `rtlsdr_set_offset_tuning`. Not supported for R82XX tuners.
+    ///
+    /// # Offset-tuning floor
+    ///
+    /// When enabled, the LO is offset below the requested center
+    /// frequency by ≈ `0.85 × sample_rate` (keenerds' 1/f noise
+    /// measurement; specifically `(rate / 2) × 1.7`). This means a
+    /// sample rate of 2.4 Msps yields a floor of ≈ 2.04 MHz; you
+    /// cannot tune below the floor while offset tuning is on.
+    /// Set the center frequency to a value above the floor *before*
+    /// enabling offset tuning, or expect [`RtlSdrError::InvalidParameter`].
+    ///
+    /// # Errors
+    ///
+    /// - [`RtlSdrError::InvalidParameter`] for R82XX tuners (the IC
+    ///   doesn't support offset tuning).
+    /// - [`RtlSdrError::InvalidParameter`] when called in direct
+    ///   sampling mode.
+    /// - [`RtlSdrError::InvalidParameter`] when enabling offset
+    ///   tuning while the current center frequency is at or below
+    ///   the computed floor — pre-#10 the IF registers were
+    ///   silently written but the tuner stayed on the old frequency
+    ///   (partial-state hazard). Per audit slice C I-6.
     pub fn set_offset_tuning(&mut self, on: bool) -> Result<(), RtlSdrError> {
         if self.tuner_type == TunerType::R820T || self.tuner_type == TunerType::R828D {
             return Err(RtlSdrError::InvalidParameter(
@@ -157,11 +179,28 @@ impl RtlSdrDevice {
         }
 
         // Based on keenerds 1/f noise measurements
-        self.offs_freq = if on {
+        let new_offs_freq = if on {
             (self.rate / 2) * OFFSET_TUNING_MULTIPLIER_NUM / OFFSET_TUNING_MULTIPLIER_DEN
         } else {
             0
         };
+
+        // Refuse to enable offset tuning when the current center
+        // frequency is at or below the computed floor — the
+        // tuner can't be retuned to `freq - offs_freq` and the
+        // pre-#10 code would silently leave the device with the
+        // IF written but the tuner on the old frequency. Validate
+        // before any state mutation so a rejected call is a no-op.
+        // Per audit slice C I-6.
+        if on && self.freq > 0 && self.freq <= new_offs_freq {
+            return Err(RtlSdrError::InvalidParameter(format!(
+                "cannot enable offset tuning: current freq {} Hz is at or below the \
+                 computed floor {} Hz (≈ 0.85 × sample_rate); tune above the floor first",
+                self.freq, new_offs_freq,
+            )));
+        }
+
+        self.offs_freq = new_offs_freq;
         self.set_if_freq(self.offs_freq)?;
 
         if let Some(tuner) = &mut self.tuner {
