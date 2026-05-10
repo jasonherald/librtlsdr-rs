@@ -53,26 +53,39 @@ pub fn write_array(
     Ok(n)
 }
 
-/// Read a 16-bit register value.
+/// Read a 1-byte register value.
 ///
-/// Ports `rtlsdr_read_reg`.
+/// Ports `rtlsdr_read_reg` (the C function takes a `len` parameter
+/// but every in-tree caller — both in upstream `librtlsdr` and in
+/// this crate — passes `len == 1`; this Rust port hardcodes `1` so
+/// the byte-order quirk below cannot silently fire).
+///
+/// # Byte-order quirk (faithful-port hazard)
+///
+/// The C upstream's `rtlsdr_read_reg` reassembles bytes as if the
+/// device returned them little-endian
+/// (`reg = (data[1] << 8) | data[0]`), while its
+/// `rtlsdr_write_reg` emits big-endian for `len == 2`
+/// (`data[0] = val >> 8; data[1] = val & 0xff`). For `len == 1`
+/// the asymmetry doesn't matter (only `data[0]` is touched). For
+/// `len == 2` it would silently produce a byte-swapped value
+/// versus the corresponding write — but no in-tree caller uses
+/// `len == 2`, so the bug is fully latent in both C and Rust.
+///
+/// **If a future caller needs a 2-byte register read, do NOT
+/// extend this function with a `len` parameter** — instead, add a
+/// dedicated `read_reg16_be` (or `_le`) helper after verifying
+/// the actual on-the-wire byte order against real hardware. Per
+/// audit issue #8.
 pub fn read_reg(
     handle: &rusb::DeviceHandle<rusb::GlobalContext>,
     block: Block,
     addr: u16,
-    len: u8,
 ) -> Result<u16, RtlSdrError> {
-    let mut data = [0u8; 2];
+    let mut data = [0u8; 1];
     let index = (block as u16) << 8;
-    handle.read_control(
-        CTRL_IN,
-        0,
-        addr,
-        index,
-        &mut data[..len as usize],
-        ctrl_timeout(),
-    )?;
-    Ok(u16::from(data[1]) << 8 | u16::from(data[0]))
+    handle.read_control(CTRL_IN, 0, addr, index, &mut data, ctrl_timeout())?;
+    Ok(u16::from(data[0]))
 }
 
 /// Write a 16-bit register value.
@@ -109,28 +122,23 @@ pub fn write_reg(
     Ok(())
 }
 
-/// Read a demodulator register.
+/// Read a 1-byte demodulator register.
 ///
-/// Ports `rtlsdr_demod_read_reg`.
+/// Ports `rtlsdr_demod_read_reg`. Same `len`-parameter rationale as
+/// [`read_reg`]: every caller passes `1`, and the C upstream's
+/// reassembly carries the same byte-order asymmetry against
+/// `demod_write_reg`. See [`read_reg`]'s "Byte-order quirk" note
+/// for the full story. Per audit issue #8.
 pub fn demod_read_reg(
     handle: &rusb::DeviceHandle<rusb::GlobalContext>,
     page: u8,
     addr: u16,
-    len: u8,
 ) -> Result<u16, RtlSdrError> {
-    let mut data = [0u8; 2];
+    let mut data = [0u8; 1];
     let index = u16::from(page);
     let usb_addr = (addr << 8) | 0x20;
-
-    handle.read_control(
-        CTRL_IN,
-        0,
-        usb_addr,
-        index,
-        &mut data[..len as usize],
-        ctrl_timeout(),
-    )?;
-    Ok(u16::from(data[1]) << 8 | u16::from(data[0]))
+    handle.read_control(CTRL_IN, 0, usb_addr, index, &mut data, ctrl_timeout())?;
+    Ok(u16::from(data[0]))
 }
 
 /// Write a demodulator register.
@@ -165,7 +173,7 @@ pub fn demod_write_reg(
     )?;
 
     // Dummy read after write (matches C implementation)
-    let _ = demod_read_reg(handle, 0x0a, 0x01, 1);
+    let _ = demod_read_reg(handle, 0x0a, 0x01);
 
     if r != len as usize {
         return Err(RtlSdrError::RegisterAccess);
@@ -232,7 +240,7 @@ pub fn set_gpio_bit(
     val: bool,
 ) -> Result<(), RtlSdrError> {
     let gpio_mask = 1u16 << gpio;
-    let r = read_reg(handle, Block::Sys, crate::reg::sys_reg::GPO, 1)?;
+    let r = read_reg(handle, Block::Sys, crate::reg::sys_reg::GPO)?;
     let new_val = if val { r | gpio_mask } else { r & !gpio_mask };
     write_reg(handle, Block::Sys, crate::reg::sys_reg::GPO, new_val, 1)
 }
@@ -245,7 +253,7 @@ pub fn set_gpio_output(
     gpio: u8,
 ) -> Result<(), RtlSdrError> {
     let gpio_mask = 1u16 << gpio;
-    let r = read_reg(handle, Block::Sys, crate::reg::sys_reg::GPD, 1)?;
+    let r = read_reg(handle, Block::Sys, crate::reg::sys_reg::GPD)?;
     write_reg(
         handle,
         Block::Sys,
@@ -253,7 +261,7 @@ pub fn set_gpio_output(
         r & !gpio_mask,
         1,
     )?;
-    let r = read_reg(handle, Block::Sys, crate::reg::sys_reg::GPOE, 1)?;
+    let r = read_reg(handle, Block::Sys, crate::reg::sys_reg::GPOE)?;
     write_reg(
         handle,
         Block::Sys,
