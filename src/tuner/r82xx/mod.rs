@@ -93,16 +93,7 @@ impl R82xxPriv {
     ) -> Result<(), RtlSdrError> {
         let freq_mhz = freq / 1_000_000;
 
-        // Find appropriate frequency range
-        let mut range_idx = 0;
-        for i in 0..FREQ_RANGES.len() - 1 {
-            if freq_mhz < FREQ_RANGES[i + 1].freq {
-                range_idx = i;
-                break;
-            }
-            range_idx = i;
-        }
-        let range = &FREQ_RANGES[range_idx];
+        let range = &FREQ_RANGES[find_freq_range_idx(freq_mhz)];
 
         // Open Drain
         self.write_reg_mask(handle, 0x17, range.open_d, 0x08)?;
@@ -428,17 +419,7 @@ impl Tuner for R82xxPriv {
             }
 
             // Find low-pass filter
-            let mut i = 0;
-            for idx in 0..IF_LOW_PASS_BW_TABLE.len() {
-                if bw > IF_LOW_PASS_BW_TABLE[idx] {
-                    i = idx;
-                    break;
-                }
-                i = idx;
-            }
-            if i > 0 {
-                i -= 1;
-            }
+            let i = find_if_lpf_idx(bw);
             reg_0b |= (15 - i) as u8;
             real_bw += IF_LOW_PASS_BW_TABLE[i];
 
@@ -537,6 +518,39 @@ impl Tuner for R82xxPriv {
     }
 }
 
+/// Pick the [`FREQ_RANGES`] entry covering `freq_mhz`. Returns the
+/// index of the largest entry whose `freq` is `<= freq_mhz`,
+/// clamping to `0` for the (impossible-for-`u32`) below-table case.
+///
+/// Extracted from [`R82xxPriv::set_mux`] for unit testability and to
+/// fix a Rust-vs-C off-by-one in the original loop shape (see #5).
+/// The C upstream uses `for (i = 0; i < N-1; i++) { if (...) break; }`
+/// which leaves `i = N-1` after natural completion; the original
+/// Rust port assigned `range_idx = i` inside the loop body and so
+/// left `range_idx = N-2` after natural completion, silently selecting
+/// the wrong entry above the topmost boundary. Using
+/// [`<[T]>::partition_point`] sidesteps that whole loop-end-semantics
+/// hazard since the table is sorted ascending by `freq`.
+fn find_freq_range_idx(freq_mhz: u32) -> usize {
+    FREQ_RANGES
+        .partition_point(|r| r.freq <= freq_mhz)
+        .saturating_sub(1)
+}
+
+/// Pick the [`IF_LOW_PASS_BW_TABLE`] entry for the requested
+/// post-residual bandwidth `bw`. Returns the index of the narrowest
+/// entry that still encompasses `bw`, falling back to the narrowest
+/// available filter when `bw` is below the table's minimum.
+///
+/// Same Rust-vs-C off-by-one fix as [`find_freq_range_idx`]; the
+/// table is sorted descending so the predicate matches "still wide
+/// enough" entries (which form a prefix). See #5.
+fn find_if_lpf_idx(bw: i32) -> usize {
+    IF_LOW_PASS_BW_TABLE
+        .partition_point(|&v| v >= bw)
+        .saturating_sub(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,14 +575,99 @@ mod tests {
     fn test_freq_range_lookup() {
         // 100 MHz should hit the range starting at 100
         let freq_mhz = 100;
-        let mut range_idx = 0;
-        for i in 0..FREQ_RANGES.len() - 1 {
-            if freq_mhz < FREQ_RANGES[i + 1].freq {
-                range_idx = i;
-                break;
-            }
-            range_idx = i;
-        }
+        let range_idx = find_freq_range_idx(freq_mhz);
         assert!(FREQ_RANGES[range_idx].freq <= freq_mhz);
+    }
+
+    // --- find_freq_range_idx edge-case tests (regression for #5) ---
+    //
+    // FREQ_RANGES is 21 entries, sorted ascending by `freq`:
+    // [0]=0, [1]=50, [2]=55, ..., [9]=100, ..., [19]=588, [20]=650.
+
+    #[test]
+    fn find_freq_range_idx_at_minimum_picks_first() {
+        assert_eq!(find_freq_range_idx(0), 0);
+    }
+
+    #[test]
+    fn find_freq_range_idx_below_first_boundary_picks_first() {
+        // FREQ_RANGES[1].freq == 50; freq_mhz < 50 still maps to [0].
+        assert_eq!(find_freq_range_idx(49), 0);
+    }
+
+    #[test]
+    fn find_freq_range_idx_at_exact_boundary_picks_that_entry() {
+        // freq_mhz == entry.freq selects that entry, not the previous one.
+        assert_eq!(find_freq_range_idx(50), 1);
+        assert_eq!(find_freq_range_idx(100), 9);
+        assert_eq!(find_freq_range_idx(450), 18);
+    }
+
+    #[test]
+    fn find_freq_range_idx_just_below_top_boundary_picks_second_to_last() {
+        // FREQ_RANGES[19].freq == 588, [20].freq == 650; 649 < 650 → idx 19.
+        assert_eq!(find_freq_range_idx(649), 19);
+    }
+
+    /// Regression for #5: at and above the topmost boundary
+    /// (650 MHz), the loop must select the last entry, not the
+    /// second-to-last. The original `for i in 0..N-1` loop assigned
+    /// `range_idx = i` inside the body and so left `range_idx = N-2`
+    /// after natural completion. The C upstream's `for (i = 0;
+    /// i < N-1; i++) { if (...) break; }` leaves `i = N-1` after
+    /// natural completion, which selects the last entry.
+    ///
+    /// Today this is masked because FREQ_RANGES rows 19 and 20 are
+    /// byte-identical except for the `freq` sentinel — but any future
+    /// field divergence between the rows would silently misbehave at
+    /// the upper edge.
+    #[test]
+    fn find_freq_range_idx_at_top_boundary_picks_last() {
+        assert_eq!(find_freq_range_idx(650), FREQ_RANGES.len() - 1);
+    }
+
+    #[test]
+    fn find_freq_range_idx_above_top_picks_last() {
+        assert_eq!(find_freq_range_idx(700), FREQ_RANGES.len() - 1);
+        assert_eq!(find_freq_range_idx(1500), FREQ_RANGES.len() - 1);
+    }
+
+    // --- find_if_lpf_idx edge-case tests (regression for #5) ---
+    //
+    // IF_LOW_PASS_BW_TABLE is 10 entries, sorted DESCENDING:
+    // [0]=1_700_000, [1]=1_600_000, ..., [5]=900_000, [6]=700_000,
+    // ..., [9]=350_000.
+
+    #[test]
+    fn find_if_lpf_idx_above_widest_picks_widest() {
+        assert_eq!(find_if_lpf_idx(2_000_000), 0);
+    }
+
+    #[test]
+    fn find_if_lpf_idx_at_widest_exact_picks_widest() {
+        assert_eq!(find_if_lpf_idx(1_700_000), 0);
+    }
+
+    #[test]
+    fn find_if_lpf_idx_between_table_entries_picks_wider() {
+        // [5] == 900_000, [6] == 700_000; 800k between them picks the
+        // wider filter that still encompasses the requested bw.
+        assert_eq!(find_if_lpf_idx(800_000), 5);
+    }
+
+    /// Regression for #5: at and below the narrowest entry
+    /// (350 kHz), the loop must select the last (narrowest) entry,
+    /// not the second-to-last. Same Rust-vs-C off-by-one as
+    /// `find_freq_range_idx_at_top_boundary_picks_last`. Affects
+    /// sub-MHz tuner bandwidth selection.
+    #[test]
+    fn find_if_lpf_idx_at_narrowest_exact_picks_last() {
+        assert_eq!(find_if_lpf_idx(350_000), IF_LOW_PASS_BW_TABLE.len() - 1);
+    }
+
+    #[test]
+    fn find_if_lpf_idx_below_narrowest_picks_last() {
+        assert_eq!(find_if_lpf_idx(200_000), IF_LOW_PASS_BW_TABLE.len() - 1);
+        assert_eq!(find_if_lpf_idx(1), IF_LOW_PASS_BW_TABLE.len() - 1);
     }
 }

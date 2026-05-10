@@ -146,13 +146,18 @@ pub fn get_device_usb_strings(index: u32) -> Result<(String, String, String), Rt
 ///
 /// Ports `rtlsdr_get_index_by_serial`.
 pub fn get_index_by_serial(serial: &str) -> Result<u32, RtlSdrError> {
-    let count = get_device_count();
-    if count == 0 {
-        return Err(RtlSdrError::DeviceNotFound(0));
-    }
+    lookup_serial(serial, get_device_count(), get_device_usb_strings)
+}
 
+/// Pure lookup helper extracted from [`get_index_by_serial`] so the
+/// matching algorithm can be unit-tested without depending on real
+/// USB enumeration. Per #6.
+pub(crate) fn lookup_serial<F>(serial: &str, count: u32, lookup: F) -> Result<u32, RtlSdrError>
+where
+    F: Fn(u32) -> Result<(String, String, String), RtlSdrError>,
+{
     for i in 0..count {
-        if let Ok((_, _, dev_serial)) = get_device_usb_strings(i) {
+        if let Ok((_, _, dev_serial)) = lookup(i) {
             if dev_serial == serial {
                 return Ok(i);
             }
@@ -183,4 +188,85 @@ pub(crate) fn find_device_by_index(
     }
 
     Err(RtlSdrError::DeviceNotFound(index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// Regression for #6: when no devices are plugged in,
+    /// `lookup_serial` must return [`RtlSdrError::InvalidParameter`]
+    /// with the requested serial in the message — not
+    /// [`RtlSdrError::DeviceNotFound(0)`], which lies about both the
+    /// failure mode (it's a serial mismatch, not a missing index)
+    /// and the input (the user passed a serial, not index 0).
+    #[test]
+    fn lookup_serial_count_zero_returns_invalid_parameter() {
+        let bogus_serial = "nonexistent_serial_for_test_6";
+        let lookup_called = Cell::new(false);
+        let result = lookup_serial(bogus_serial, 0, |_| {
+            lookup_called.set(true);
+            Ok((String::new(), String::new(), String::new()))
+        });
+        assert!(
+            !lookup_called.get(),
+            "lookup must not be called when count == 0",
+        );
+        assert!(
+            matches!(&result, Err(RtlSdrError::InvalidParameter(msg)) if msg.contains(bogus_serial)),
+            "expected InvalidParameter containing serial, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn lookup_serial_finds_match_at_index() {
+        let result = lookup_serial("wanted", 3, |i| {
+            Ok((
+                String::new(),
+                String::new(),
+                match i {
+                    0 => "other_a".to_string(),
+                    1 => "wanted".to_string(),
+                    _ => "other_b".to_string(),
+                },
+            ))
+        });
+        assert_eq!(result.ok(), Some(1));
+    }
+
+    #[test]
+    fn lookup_serial_no_match_returns_invalid_parameter() {
+        let bogus_serial = "wanted";
+        let result = lookup_serial(bogus_serial, 2, |_| {
+            Ok((String::new(), String::new(), "nope".to_string()))
+        });
+        assert!(
+            matches!(&result, Err(RtlSdrError::InvalidParameter(msg)) if msg.contains(bogus_serial)),
+            "expected InvalidParameter containing serial, got {result:?}",
+        );
+    }
+
+    /// Per-device lookup failures (e.g. permission denied) must not
+    /// abort the search — the loop should keep trying subsequent
+    /// indices in case the wanted serial is on a later device.
+    #[test]
+    fn lookup_serial_skips_lookup_errors_and_continues() {
+        let result = lookup_serial("wanted", 3, |i| {
+            if i == 1 {
+                Err(RtlSdrError::Usb(rusb::Error::Access))
+            } else {
+                Ok((
+                    String::new(),
+                    String::new(),
+                    if i == 2 {
+                        "wanted".to_string()
+                    } else {
+                        "other".to_string()
+                    },
+                ))
+            }
+        });
+        assert_eq!(result.ok(), Some(2));
+    }
 }
