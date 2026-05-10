@@ -3,11 +3,60 @@
 //! See [`RtlSdrReader`] and [`RtlSdrDevice::reader`].
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::error::RtlSdrError;
 
 use super::RtlSdrDevice;
+
+/// RAII guard for the per-device reader-busy flag. Acquiring sets
+/// the flag to `true` via `compare_exchange`; dropping clears it.
+///
+/// Used to ensure at most one bulk-read activity (sync read,
+/// blocking iterator, async stream) is in flight on USB endpoint
+/// 0x81 at a time. Concurrent bulk reads on the same endpoint
+/// silently split the contiguous IQ stream between callers — each
+/// thread sees valid bytes for its own transfer, but neither has
+/// the complete signal. Per #7.
+///
+/// Constructed via [`Self::try_acquire`]; never instantiated
+/// directly.
+//
+// `dead_code` allow lifts in the follow-up commits that wire the
+// guard into `RtlSdrDevice` + `RtlSdrReader` bulk-read entry points.
+// Per #7 plan; remove this allow when those callers exist.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct ReaderBusyGuard {
+    flag: Arc<AtomicBool>,
+}
+
+#[allow(dead_code)]
+impl ReaderBusyGuard {
+    /// Try to acquire the reader-busy flag. Returns
+    /// `Err(RtlSdrError::DeviceBusy)` if another bulk-read activity
+    /// is already in flight on this device.
+    ///
+    /// `Acquire` ordering on success and on the failure-load path is
+    /// sufficient: the only invariant being synchronized is "another
+    /// caller holds the flag," and the matching `Release` in `Drop`
+    /// happens-before the next successful acquire.
+    pub(crate) fn try_acquire(flag: Arc<AtomicBool>) -> Result<Self, RtlSdrError> {
+        flag.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .map_err(|_| RtlSdrError::DeviceBusy)?;
+        Ok(Self { flag })
+    }
+}
+
+impl Drop for ReaderBusyGuard {
+    fn drop(&mut self) {
+        // Release ordering pairs with the Acquire on the next
+        // try_acquire — any writes performed while the guard was
+        // held are observable to the next acquirer.
+        self.flag.store(false, Ordering::Release);
+    }
+}
 
 /// Streaming-focused handle. Acquired via [`RtlSdrDevice::reader`].
 ///
@@ -205,4 +254,39 @@ mod tests {
         assert_send::<ReaderIter>();
         assert_send::<RtlSdrReader>();
     };
+
+    /// Per #7: a second `try_acquire` while a guard is alive must
+    /// return [`RtlSdrError::DeviceBusy`].
+    #[test]
+    fn busy_guard_first_acquire_succeeds_second_returns_device_busy() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let _guard1 = ReaderBusyGuard::try_acquire(Arc::clone(&flag))
+            .expect("first acquire on a free flag must succeed");
+        let result = ReaderBusyGuard::try_acquire(Arc::clone(&flag));
+        assert!(
+            matches!(result, Err(RtlSdrError::DeviceBusy)),
+            "expected DeviceBusy on contended acquire, got {result:?}",
+        );
+    }
+
+    /// Per #7: dropping the guard must clear the flag so subsequent
+    /// acquires succeed.
+    #[test]
+    fn busy_guard_drop_releases_flag() {
+        let flag = Arc::new(AtomicBool::new(false));
+        {
+            let _guard = ReaderBusyGuard::try_acquire(Arc::clone(&flag))
+                .expect("first acquire must succeed");
+            assert!(
+                flag.load(Ordering::Acquire),
+                "flag must be set while guard is alive",
+            );
+        }
+        assert!(
+            !flag.load(Ordering::Acquire),
+            "flag must be cleared after guard drop",
+        );
+        let _guard2 = ReaderBusyGuard::try_acquire(Arc::clone(&flag))
+            .expect("acquire after drop must succeed");
+    }
 }
