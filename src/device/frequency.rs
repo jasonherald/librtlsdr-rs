@@ -192,3 +192,69 @@ impl RtlSdrDevice {
         Ok(())
     }
 }
+
+/// Subtract the offset-tuning floor from a target frequency.
+///
+/// When offset tuning is enabled the tuner is programmed at
+/// `freq - offs_freq` so the LO sits below the requested center
+/// frequency by the configured offset (≈ 0.85 × sample_rate when
+/// offset tuning is on; `0` when it's off, making this a no-op).
+///
+/// # Errors
+///
+/// Returns [`RtlSdrError::InvalidParameter`] when `freq < offs_freq`.
+/// Historically the C upstream (and this crate before #10) did
+/// unsigned-wrapping subtraction here, producing a huge `u32` that
+/// the tuner rejected with an opaque "frequency out of range"
+/// error. Catching it before the tuner call yields a friendly
+/// typed error naming the floor and the requested value.
+//
+// `dead_code` allow lifts in commit 2 of this branch when the
+// three call sites in the impl above start using it. Per #10 plan.
+#[allow(dead_code)]
+fn freq_minus_offset(freq: u32, offs_freq: u32) -> Result<u32, RtlSdrError> {
+    freq.checked_sub(offs_freq).ok_or_else(|| {
+        RtlSdrError::InvalidParameter(format!(
+            "freq {freq} Hz is below the offset-tuning floor {offs_freq} Hz"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn freq_minus_offset_above_floor_subtracts() {
+        assert_eq!(
+            freq_minus_offset(100_000_000, 2_720_000).ok(),
+            Some(97_280_000)
+        );
+    }
+
+    #[test]
+    fn freq_minus_offset_at_floor_returns_zero() {
+        assert_eq!(freq_minus_offset(2_720_000, 2_720_000).ok(), Some(0));
+    }
+
+    #[test]
+    fn freq_minus_offset_with_zero_offset_is_identity() {
+        assert_eq!(freq_minus_offset(100_000_000, 0).ok(), Some(100_000_000));
+    }
+
+    /// Per #10: below-floor inputs must return a friendly typed
+    /// error naming the requested freq and the floor — not silently
+    /// wrap to a huge u32 (audit's documented hazard).
+    #[test]
+    fn freq_minus_offset_below_floor_returns_invalid_parameter() {
+        let result = freq_minus_offset(100_000, 2_720_000);
+        assert!(
+            matches!(
+                &result,
+                Err(RtlSdrError::InvalidParameter(msg))
+                    if msg.contains("100000") && msg.contains("2720000")
+            ),
+            "expected InvalidParameter naming both values, got {result:?}",
+        );
+    }
+}
