@@ -162,6 +162,19 @@ impl RtlSdrDevice {
     /// but neither has the complete IQ stream. Only use this
     /// escape hatch if you serialize bulk reads yourself (one
     /// worker thread at a time on endpoint 0x81). Per #7.
+    ///
+    /// # Disconnect detection
+    ///
+    /// Bypassing the typed surface also bypasses the
+    /// `NoDevice → DeviceLost` translation that
+    /// [`Self::read_sync`] / [`super::RtlSdrReader::read_sync`]
+    /// perform internally — your raw `read_bulk` calls will
+    /// surface `rusb::Error::NoDevice` (and on Linux,
+    /// `rusb::Error::Pipe` / `Io` mid-flight) directly. Use
+    /// [`crate::RtlSdrError::is_disconnected`] to classify
+    /// rusb errors against the same disconnect-set the typed
+    /// surface uses; pre-#43 (0.2.1) consumers had to maintain
+    /// their own classifier. Per audit pass-2 #67.
     pub fn usb_handle(&self) -> std::sync::Arc<rusb::DeviceHandle<rusb::GlobalContext>> {
         std::sync::Arc::clone(&self.handle)
     }
