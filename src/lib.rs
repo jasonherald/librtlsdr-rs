@@ -18,7 +18,12 @@
 //! dev.set_center_freq(100_000_000)?;
 //! dev.set_sample_rate(2_048_000)?;
 //!
-//! // Manual gain at 14.4 dB (= 144 in tenths-of-dB).
+//! // Manual gain at 14.4 dB (`144` in tenths-of-dB happens to be
+//! // an exact step on the R820T2 gain table). For arbitrary user
+//! // input, snap to the nearest step via [`RtlSdrDevice::closest_gain`]
+//! // first — passing a value not in the tuner's table results in
+//! // the tuner silently rounding (or, on the E4000, returning an
+//! // `InvalidGain` error).
 //! dev.set_tuner_gain_mode(true)?;
 //! dev.set_tuner_gain(144)?;
 //!
