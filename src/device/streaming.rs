@@ -19,8 +19,34 @@ use crate::usb;
 use super::RtlSdrDevice;
 use super::reader::ReaderBusyGuard;
 
-/// Callback type for async reading.
-/// Called with a byte slice of IQ data for each completed bulk transfer.
+/// Callback type for async reading. Called with a byte slice of
+/// IQ data for each completed bulk transfer inside
+/// [`RtlSdrDevice::read_async_blocking`]'s loop.
+///
+/// # Callback contract (per audit pass-2 #71)
+///
+/// The callback runs on the thread that called
+/// [`RtlSdrDevice::read_async_blocking`], inside the read loop,
+/// while the reader-busy flag is held. To keep the loop
+/// responsive to the cancel flag and the device's bulk-read
+/// cadence:
+///
+/// - **Don't block on shared state held outside the callback.**
+///   Acquiring a mutex the cancel-flag setter also touches will
+///   deadlock the cancel.
+/// - **Don't perform long synchronous I/O.** The next bulk read
+///   doesn't fire until the callback returns; consumer-side
+///   blocking shows up as bytes-per-second drops.
+/// - **Don't panic under `panic = "abort"`.** The
+///   [`super::reader::ReaderBusyGuard`]'s Drop releases the
+///   busy-flag during normal unwind, but `abort` skips Drop
+///   and leaves the flag stuck `true` for the device's
+///   lifetime. Standard `panic = "unwind"` (the default) is
+///   safe because Rust's RAII handles the release.
+///
+/// In short: treat the callback as a buffer-handoff site, not a
+/// processing site. Push the bytes into a queue / channel /
+/// ringbuffer and do the actual work elsewhere.
 pub type ReadAsyncCb = Box<dyn FnMut(&[u8]) + Send>;
 
 /// Maximum allowed buffer length for async reads (16 MB).
