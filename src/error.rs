@@ -1,7 +1,12 @@
 //! Error types for the RTL-SDR driver.
 
 /// Errors from RTL-SDR USB operations.
-#[derive(Debug, thiserror::Error)]
+///
+/// `Clone`, `PartialEq`, and `Eq` are derived to support the
+/// common consumer patterns of stashing the last error in an
+/// `Arc<Mutex<Option<RtlSdrError>>>`, snapshotting it across UI
+/// re-renders, or asserting equality in tests. Per #15.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RtlSdrError {
     /// USB communication error.
     #[error("USB error: {0}")]
