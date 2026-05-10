@@ -32,6 +32,23 @@ const BULK_ALIGNMENT: u32 = 512;
 /// Async read loop timeout for cancel flag polling.
 const ASYNC_POLL_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Maximum consecutive `Ok(0)` reads tolerated by
+/// [`RtlSdrDevice::read_async_blocking`] before the loop fuses.
+///
+/// A healthy RTL-SDR returns either `Ok(n > 0)` bytes or
+/// `Err(Timeout)` — `Ok(0)` is a sentinel meaning the USB transfer
+/// completed with zero payload (typically a ZLP from a
+/// misbehaving / stalling device). The pre-#12 loop retried
+/// `Ok(0)` indefinitely, matching the C upstream — but a
+/// degenerate device producing ZLPs forever would lock the
+/// callback consumer in a tight retry loop with no diagnostic.
+///
+/// 100 reads × the `ASYNC_POLL_TIMEOUT` upper bound (1 s) =
+/// ~100 s worst-case before the loop fuses. Healthy devices
+/// reset the counter on the first `Ok(n > 0)`. Per audit
+/// issue #12 / "Reconcile Ok(0) semantics."
+const MAX_CONSECUTIVE_ZERO_READS: u32 = 100;
+
 /// Internal bulk-read helper shared by [`RtlSdrDevice::read_sync`]
 /// and [`SampleIter::next`] (and, in `reader.rs`, also by
 /// [`super::reader::RtlSdrReader::read_sync`] / `ReaderIter::next`).
@@ -207,6 +224,20 @@ impl RtlSdrDevice {
     /// - `cb`: callback called with each buffer of IQ data
     /// - `cancel_flag`: set to `true` from another thread to stop reading
     /// - `buf_len`: buffer length in bytes (0 = default, must be multiple of 512)
+    ///
+    /// # Termination
+    ///
+    /// Returns when any of the following:
+    /// - `cancel_flag` becomes `true` (caller-initiated; returns `Ok(())`)
+    /// - The underlying USB read returns `NoDevice` (returns
+    ///   `Err(DeviceLost)`) or any other transport error
+    /// - 100 consecutive `Ok(0)` (zero-length) reads have been
+    ///   observed (returns `Ok(())` with a `tracing::warn!`). A
+    ///   healthy device returns either `Ok(n > 0)` or
+    ///   `Err(Timeout)`; sustained `Ok(0)` indicates a degenerate
+    ///   device that the C upstream would loop on forever.
+    ///   Brings this path into rough parity with `iter_samples`'s
+    ///   defensive `Ok(0)` fuse. Per audit issue #12.
     pub fn read_async_blocking(
         &self,
         mut cb: ReadAsyncCb,
@@ -229,6 +260,7 @@ impl RtlSdrDevice {
 
         let timeout = ASYNC_POLL_TIMEOUT;
         let mut buf = vec![0u8; actual_buf_len];
+        let mut consecutive_zero_reads: u32 = 0;
 
         while !cancel_flag.load(Ordering::Relaxed) {
             match self
@@ -236,10 +268,30 @@ impl RtlSdrDevice {
                 .read_bulk(crate::constants::BULK_ENDPOINT, &mut buf, timeout)
             {
                 Ok(n) if n > 0 => {
+                    consecutive_zero_reads = 0;
                     cb(&buf[..n]);
                 }
-                // Zero-length read or timeout — check cancel flag and retry
-                Ok(_) | Err(rusb::Error::Timeout) => {}
+                Ok(_) => {
+                    // Zero-length read. A healthy device shouldn't
+                    // produce these; a degenerate device producing
+                    // ZLPs forever would lock the consumer in a
+                    // tight retry loop. Fuse after a documented
+                    // bound. Per audit issue #12.
+                    consecutive_zero_reads += 1;
+                    if consecutive_zero_reads >= MAX_CONSECUTIVE_ZERO_READS {
+                        tracing::warn!(
+                            "read_async_blocking: {MAX_CONSECUTIVE_ZERO_READS} consecutive \
+                             zero-length reads — fusing the loop (degenerate device?)"
+                        );
+                        return Ok(());
+                    }
+                }
+                Err(rusb::Error::Timeout) => {
+                    // Timeout doesn't reset the counter (it carries
+                    // no signal about whether the device is producing
+                    // ZLPs) but doesn't increment it either —
+                    // distinct from Ok(0).
+                }
                 Err(rusb::Error::NoDevice) => {
                     return Err(RtlSdrError::DeviceLost);
                 }

@@ -254,6 +254,26 @@ pub const BULK_TIMEOUT: u64 = 0;
 /// USB bulk transfer endpoint for IQ data.
 pub const BULK_ENDPOINT: u8 = 0x81;
 
+/// Async-stream channel depth — number of buffers the worker can
+/// queue ahead of the consumer before blocking on back-pressure.
+///
+/// Sized at **4 buffers** as a deliberate trade-off:
+/// - At 2 Msps × 2 bytes/sample = **4 MB/s throughput**, a 256 KB
+///   buffer fills in **~64 ms**.
+/// - 4 queued buffers absorb up to **~256 ms** of consumer-side
+///   latency before the worker has to block.
+/// - Memory cost is **4 × 256 KB = ~1 MB queued** in the worst case.
+///
+/// Tune the consumer (or scale up runtime threads) rather than
+/// widening the channel — bigger queues just delay back-pressure
+/// without preventing it. SDR sample drops are usually fatal
+/// (gaps in the stream), so the bounded channel intentionally
+/// blocks the worker on slow consumers rather than dropping.
+///
+/// Used by both `device::streaming_tokio` and
+/// `device::streaming_smol`. Per audit issue #12.
+pub const STREAM_BACKPRESSURE_DEPTH: usize = 4;
+
 /// EEPROM I2C address.
 pub const EEPROM_ADDR: u8 = 0xa0;
 

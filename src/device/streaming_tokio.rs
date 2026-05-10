@@ -32,14 +32,10 @@ use futures_core::Stream;
 
 use crate::error::RtlSdrError;
 
+use crate::constants::STREAM_BACKPRESSURE_DEPTH;
+
 use super::RtlSdrReader;
 use super::reader::ReaderBusyGuard;
-
-/// Channel depth — 4 × 256 KB ≈ 1 MB ≈ 250 ms at 2 Msps × 2
-/// bytes/sample = 4 MB/s. Enough to absorb a slow tick on the
-/// consumer without dropping a transfer; not so much that
-/// latency-sensitive consumers observe a long queue.
-const STREAM_BACKPRESSURE_DEPTH: usize = 4;
 
 impl RtlSdrReader {
     /// Stream IQ samples as a tokio-friendly async `Stream`.
