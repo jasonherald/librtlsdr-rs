@@ -97,8 +97,19 @@ pub struct RtlSdrDevice {
     pub(crate) product: String,
     pub(crate) serial: String,
 
-    // Device lost tracking
-    pub(crate) dev_lost: bool,
+    /// Device-disconnected flag. Set to `true` by the bulk-read
+    /// path on `rusb::Error::NoDevice → RtlSdrError::DeviceLost`
+    /// translation; read by [`Drop`] to skip cleanup writes
+    /// against a vanished handle.
+    ///
+    /// `Arc<AtomicBool>` so streaming code (which only holds an
+    /// `Arc<DeviceHandle>` via [`RtlSdrReader`]) can update the
+    /// same flag the parent device's `Drop` reads. Per audit
+    /// pass-2 #40 (was `bool` in 0.1.x-0.2.0; structurally dead —
+    /// set once after `init_baseband` and never updated by the
+    /// runtime, so hot-unplug produced a stream of cryptic
+    /// "register access failed" lines from cleanup).
+    pub(crate) dev_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(crate) driver_active: bool,
 }
 
@@ -155,6 +166,7 @@ impl RtlSdrDevice {
         RtlSdrReader {
             handle: std::sync::Arc::clone(&self.handle),
             busy: std::sync::Arc::clone(&self.reader_busy),
+            dev_lost: std::sync::Arc::clone(&self.dev_lost),
         }
     }
 
@@ -194,7 +206,7 @@ impl RtlSdrDevice {
             manufact: String::new(),
             product: String::new(),
             serial: String::new(),
-            dev_lost: true,
+            dev_lost: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             driver_active,
         };
 
@@ -214,7 +226,8 @@ impl RtlSdrDevice {
 
         // Initialize baseband
         usb::init_baseband(&dev.handle, &dev.fir)?;
-        dev.dev_lost = false;
+        dev.dev_lost
+            .store(false, std::sync::atomic::Ordering::Release);
 
         // Get device manufacturer, product, and serial strings
         if let Ok(dd) = dev.handle.device().device_descriptor() {
@@ -592,6 +605,20 @@ impl RtlSdrDevice {
                 tuner_freq
             };
 
+            // Push the new (PPM-corrected) tuner xtal into the
+            // backend's PLL state. C upstream does this in
+            // `rtlsdr_set_xtal_freq` (librtlsdr.c:752-754); the
+            // 0.1.x-0.2.0 Rust port updated `self.tun_xtal` and
+            // called `set_center_freq` for the retune, but the
+            // tuner driver's internal xtal field still held the
+            // stale value, so the PLL math computed against old
+            // xtal. Same shape `set_freq_correction` uses (#4)
+            // — extended here per audit pass-2 #39.
+            let corrected_xtal = self.get_tuner_xtal();
+            if let Some(tuner) = &mut self.tuner {
+                tuner.set_xtal(corrected_xtal);
+            }
+
             if self.freq > 0 {
                 self.set_center_freq(self.freq)?;
             }
@@ -620,7 +647,7 @@ impl Drop for RtlSdrDevice {
         // behavior under unwinding). Log at `tracing::debug!` so a
         // post-mortem inspection has at least *something* to go on
         // when cleanup misbehaves. Per audit slice A M-7 / #9.
-        if !self.dev_lost {
+        if !self.dev_lost.load(std::sync::atomic::Ordering::Acquire) {
             // Wait for async to complete
             // (in practice async is handled by the caller stopping first)
 
@@ -726,7 +753,10 @@ impl std::fmt::Debug for RtlSdrDevice {
             .field("manufact", &self.manufact)
             .field("product", &self.product)
             .field("serial", &self.serial)
-            .field("dev_lost", &self.dev_lost)
+            .field(
+                "dev_lost",
+                &self.dev_lost.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .field("driver_active", &self.driver_active)
             .finish()
     }

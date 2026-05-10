@@ -64,13 +64,13 @@ impl R82xxPriv {
             return Ok(());
         }
 
-        let max_msg = self.max_i2c_msg_len;
+        let buf_capacity = self.buf.len();
         let mut pos = 0usize;
         let mut current_reg = reg;
         let mut remaining = val.len();
 
         while remaining > 0 {
-            let size = remaining.min(max_msg - 1);
+            let size = i2c_chunk_size(remaining, self.max_i2c_msg_len, buf_capacity);
 
             // Build I2C message: [reg, data...]
             self.buf[0] = current_reg;
@@ -177,5 +177,75 @@ impl R82xxPriv {
         }
 
         Ok(())
+    }
+}
+
+/// Number of data bytes for one I2C write chunk.
+///
+/// `max_msg_len` is clamped to `[2, buf_capacity]` so the
+/// [`R82xxPriv::write`] split-write loop is bounded:
+/// - At `max_msg_len = 1`, `size = 0` would spin the loop forever
+///   (`remaining` never decreases). Clamping the floor to `2`
+///   guarantees at least one data byte per chunk.
+/// - At `max_msg_len > buf_capacity`, the `self.buf[..size + 1]`
+///   slice index would panic. Clamping the ceiling makes the
+///   index obviously in-range.
+///
+/// `R82xxConfig::max_i2c_msg_len` is a `pub` field, so a misconfig
+/// is a consumer-reachable footgun even though every in-tree
+/// caller passes the safe value `8`. Per audit pass-2 #42.
+fn i2c_chunk_size(remaining: usize, max_msg_len: usize, buf_capacity: usize) -> usize {
+    let effective_max = max_msg_len.clamp(2, buf_capacity);
+    remaining.min(effective_max - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NUM_REGS, i2c_chunk_size};
+
+    const BUF_CAP: usize = NUM_REGS + 1;
+
+    #[test]
+    fn normal_max_msg_picks_max_msg_minus_one() {
+        // max_msg=8 means [reg_byte, 7 data bytes] per chunk.
+        assert_eq!(i2c_chunk_size(20, 8, BUF_CAP), 7);
+        assert_eq!(i2c_chunk_size(7, 8, BUF_CAP), 7);
+    }
+
+    #[test]
+    fn remaining_smaller_than_chunk_returns_remaining() {
+        assert_eq!(i2c_chunk_size(3, 8, BUF_CAP), 3);
+        assert_eq!(i2c_chunk_size(1, 8, BUF_CAP), 1);
+    }
+
+    #[test]
+    fn max_msg_below_floor_clamps_so_loop_makes_progress() {
+        // Per #42: max_msg=1 used to give size=0 → infinite loop.
+        // Clamp to 2 so each chunk places at least 1 data byte.
+        assert_eq!(i2c_chunk_size(10, 1, BUF_CAP), 1);
+        assert_eq!(i2c_chunk_size(10, 0, BUF_CAP), 1);
+    }
+
+    #[test]
+    fn max_msg_above_buf_capacity_clamps_so_no_oob() {
+        // Per #42: max_msg > buf_capacity used to OOB-panic the
+        // `self.buf[..size + 1]` slice index. Clamp upward.
+        assert_eq!(i2c_chunk_size(100, 1000, BUF_CAP), BUF_CAP - 1);
+        assert_eq!(i2c_chunk_size(100, BUF_CAP + 1, BUF_CAP), BUF_CAP - 1);
+    }
+
+    /// Pin the no-infinite-loop invariant: any `remaining > 0`
+    /// must produce a positive chunk size for any `max_msg_len`.
+    #[test]
+    fn chunk_size_always_makes_progress_when_remaining_positive() {
+        for max_msg in 0..=64 {
+            for remaining in 1..=64 {
+                let size = i2c_chunk_size(remaining, max_msg, BUF_CAP);
+                assert!(
+                    size > 0,
+                    "no progress: remaining={remaining}, max_msg={max_msg}"
+                );
+            }
+        }
     }
 }

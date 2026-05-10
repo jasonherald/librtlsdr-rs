@@ -55,8 +55,16 @@ const MAX_CONSECUTIVE_ZERO_READS: u32 = 100;
 /// Does NOT acquire the reader-busy guard — callers are responsible
 /// for that contract; this function only does the actual USB
 /// bulk-IN transfer + `NoDevice` translation.
+///
+/// `dev_lost` is set to `true` on the `NoDevice → DeviceLost`
+/// translation path. The flag is shared with the parent
+/// [`RtlSdrDevice`] so its [`Drop`] impl can skip cleanup against
+/// a vanished handle (avoids a stream of cryptic
+/// "register access failed" lines from cleanup writes that would
+/// every return `NoDevice`). Per audit pass-2 #40.
 pub(crate) fn bulk_read(
     handle: &rusb::DeviceHandle<rusb::GlobalContext>,
+    dev_lost: &AtomicBool,
     buf: &mut [u8],
 ) -> Result<usize, RtlSdrError> {
     let timeout = if BULK_TIMEOUT == 0 {
@@ -64,9 +72,31 @@ pub(crate) fn bulk_read(
     } else {
         Duration::from_millis(BULK_TIMEOUT)
     };
-    match handle.read_bulk(crate::constants::BULK_ENDPOINT, buf, timeout) {
+    translate_bulk_result(
+        handle.read_bulk(crate::constants::BULK_ENDPOINT, buf, timeout),
+        dev_lost,
+    )
+}
+
+/// Translate a rusb bulk-read result into the crate's typed shape,
+/// side-effecting the `dev_lost` flag on disconnect.
+///
+/// Pulled out of [`bulk_read`] so the disconnect-detection
+/// behavior can be unit-tested without a real USB handle.
+/// Per audit pass-2 #40.
+fn translate_bulk_result(
+    result: rusb::Result<usize>,
+    dev_lost: &AtomicBool,
+) -> Result<usize, RtlSdrError> {
+    match result {
         Ok(n) => Ok(n),
-        Err(rusb::Error::NoDevice) => Err(RtlSdrError::DeviceLost),
+        Err(rusb::Error::NoDevice) => {
+            // `Release` pairs with the `Drop` impl's `Acquire`
+            // load — any cleanup-skipping decision must observe
+            // a flag set by a happens-before bulk-read failure.
+            dev_lost.store(true, Ordering::Release);
+            Err(RtlSdrError::DeviceLost)
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -128,7 +158,7 @@ impl RtlSdrDevice {
     /// already in flight on this device. Per #7.
     pub fn read_sync(&self, buf: &mut [u8]) -> Result<usize, RtlSdrError> {
         let _guard = ReaderBusyGuard::try_acquire(std::sync::Arc::clone(&self.reader_busy))?;
-        bulk_read(&self.handle, buf)
+        bulk_read(&self.handle, &self.dev_lost, buf)
     }
 
     /// Iterate IQ samples as a sequence of owned byte buffers.
@@ -313,6 +343,10 @@ impl RtlSdrDevice {
                     // distinct from Ok(0).
                 }
                 Err(rusb::Error::NoDevice) => {
+                    // Mirror `bulk_read`'s `dev_lost` side effect
+                    // so `Drop` can skip cleanup against a
+                    // vanished handle. Per audit pass-2 #40.
+                    self.dev_lost.store(true, Ordering::Release);
                     return Err(RtlSdrError::DeviceLost);
                 }
                 Err(e) => {
@@ -370,7 +404,7 @@ impl Iterator for SampleIter<'_> {
         // Bypass `device.read_sync` (which would re-acquire its own
         // guard per call) — the iterator already holds the guard
         // for its lifetime via `_guard`. Per #7.
-        match bulk_read(&device.handle, &mut buf) {
+        match bulk_read(&device.handle, &device.dev_lost, &mut buf) {
             Ok(0) => {
                 // Zero-length read — treat as end-of-stream so
                 // callers using `.take(N)` / `for ... in iter`
@@ -422,4 +456,56 @@ mod tests {
     // documented "single-threaded sync iteration" contract.
     // Per audit issue #20.
     static_assertions::assert_not_impl_any!(SampleIter<'static>: Send);
+
+    /// Per audit pass-2 #40: the `NoDevice → DeviceLost`
+    /// translation must side-effect the shared `dev_lost` flag
+    /// so the parent device's `Drop` can skip cleanup against a
+    /// vanished handle.
+    #[test]
+    fn translate_no_device_sets_dev_lost_flag() {
+        let flag = AtomicBool::new(false);
+        let result = translate_bulk_result(Err(rusb::Error::NoDevice), &flag);
+        assert!(matches!(result, Err(RtlSdrError::DeviceLost)));
+        assert!(flag.load(Ordering::Acquire), "dev_lost should be set");
+    }
+
+    #[test]
+    fn translate_ok_does_not_touch_dev_lost_flag() {
+        let flag = AtomicBool::new(false);
+        let result = translate_bulk_result(Ok(42), &flag);
+        assert!(matches!(result, Ok(42)));
+        assert!(!flag.load(Ordering::Acquire));
+    }
+
+    /// Pin that other transport errors do NOT trip the
+    /// disconnect flag. `Timeout` is the most important — a slow
+    /// stream is healthy, not lost.
+    #[test]
+    fn translate_other_errors_do_not_touch_dev_lost_flag() {
+        for kind in [
+            rusb::Error::Timeout,
+            rusb::Error::Pipe,
+            rusb::Error::Io,
+            rusb::Error::Overflow,
+        ] {
+            let flag = AtomicBool::new(false);
+            let _ = translate_bulk_result(Err(kind), &flag);
+            assert!(
+                !flag.load(Ordering::Acquire),
+                "dev_lost should not fire for {kind:?}"
+            );
+        }
+    }
+
+    /// Pin idempotence: a second `NoDevice` after the flag is
+    /// already set must be a no-op (still sets, still returns
+    /// `DeviceLost`, no panic). Real bulk-read paths might
+    /// retry once after the flag is set.
+    #[test]
+    fn translate_no_device_is_idempotent() {
+        let flag = AtomicBool::new(true);
+        let result = translate_bulk_result(Err(rusb::Error::NoDevice), &flag);
+        assert!(matches!(result, Err(RtlSdrError::DeviceLost)));
+        assert!(flag.load(Ordering::Acquire));
+    }
 }
