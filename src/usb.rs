@@ -117,7 +117,10 @@ pub fn write_reg(
         ctrl_timeout(),
     )?;
     if r != len as usize {
-        return Err(RtlSdrError::RegisterAccess);
+        return Err(RtlSdrError::RegisterAccess {
+            block,
+            address: addr,
+        });
     }
     Ok(())
 }
@@ -176,7 +179,15 @@ pub fn demod_write_reg(
     let _ = demod_read_reg(handle, 0x0a, 0x01);
 
     if r != len as usize {
-        return Err(RtlSdrError::RegisterAccess);
+        // Demod writes don't use the `Block` dispatch (they go
+        // through a page+addr scheme); tag with `Block::Demod`
+        // so the diagnostic at least names the access category.
+        // The `address` is the original demod-relative addr
+        // (before the `<< 8 | 0x20` USB-transfer munging).
+        return Err(RtlSdrError::RegisterAccess {
+            block: Block::Demod,
+            address: addr,
+        });
     }
     Ok(())
 }

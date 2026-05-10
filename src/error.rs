@@ -49,9 +49,18 @@ pub enum RtlSdrError {
     #[error("device lost")]
     DeviceLost,
 
-    /// Register write/read failed.
-    #[error("register access failed")]
-    RegisterAccess,
+    /// Register write/read failed: the USB control transfer
+    /// reported fewer bytes than the operation requested.
+    /// `block` names the access category (block-addressed write,
+    /// demod-addressed write, I2C / EEPROM, etc.); `address` is
+    /// the register address the operation was targeting.
+    /// **Struct variant with context fields since 0.2** — was
+    /// `RegisterAccess` (no payload) in 0.1.x.
+    #[error("register access failed (block={block:?}, addr=0x{address:04x})")]
+    RegisterAccess {
+        block: crate::reg::Block,
+        address: u16,
+    },
 }
 
 impl RtlSdrError {
@@ -131,6 +140,12 @@ mod tests {
         assert!(!RtlSdrError::DeviceBusy.is_timeout());
         assert!(!RtlSdrError::Usb(rusb::Error::NoDevice).is_timeout());
         assert!(!RtlSdrError::Usb(rusb::Error::Io).is_timeout());
-        assert!(!RtlSdrError::RegisterAccess.is_timeout());
+        assert!(
+            !RtlSdrError::RegisterAccess {
+                block: crate::reg::Block::Demod,
+                address: 0
+            }
+            .is_timeout()
+        );
     }
 }
