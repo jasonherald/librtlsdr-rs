@@ -592,6 +592,20 @@ impl RtlSdrDevice {
                 tuner_freq
             };
 
+            // Push the new (PPM-corrected) tuner xtal into the
+            // backend's PLL state. C upstream does this in
+            // `rtlsdr_set_xtal_freq` (librtlsdr.c:752-754); the
+            // 0.1.x-0.2.0 Rust port updated `self.tun_xtal` and
+            // called `set_center_freq` for the retune, but the
+            // tuner driver's internal xtal field still held the
+            // stale value, so the PLL math computed against old
+            // xtal. Same shape `set_freq_correction` uses (#4)
+            // — extended here per audit pass-2 #39.
+            let corrected_xtal = self.get_tuner_xtal();
+            if let Some(tuner) = &mut self.tuner {
+                tuner.set_xtal(corrected_xtal);
+            }
+
             if self.freq > 0 {
                 self.set_center_freq(self.freq)?;
             }
