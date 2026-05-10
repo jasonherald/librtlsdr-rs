@@ -25,6 +25,36 @@ use crate::error::RtlSdrError;
 ///
 /// Tuners communicate with the RTL2832 via I2C. The I2C repeater must be
 /// enabled before calling these methods and disabled after.
+///
+/// # Errors (typed since 0.2)
+///
+/// Each method returns [`RtlSdrError`]. The most common
+/// tuner-side variants (carried inside `RtlSdrError::Tuner` as
+/// [`crate::TunerError`]) match by method shape:
+///
+/// - `set_freq` — `PllNotLocked { freq_hz }` (R82xx, E4K when
+///   the requested LO doesn't reach lock),
+///   `PllProgrammingFailed { backend, freq_hz, reason }`
+///   (R82xx VCO-divider / nint-bound failures, FC0012 / FC0013
+///   PLL underflow, FC2580 n_val overflow), `XtalIsZero`
+///   (any backend when the crystal is misconfigured).
+/// - `set_bw` — `UnsupportedFilterBandwidth { mode }` (FC2580
+///   only). Other backends should not return tuner errors here
+///   today; the success return is the IF-frequency hint
+///   (see method-level doc).
+/// - `set_gain` — `InvalidGain { what, detail }` (E4K only;
+///   other backends accept any value or snap to nearest).
+/// - All methods can additionally return `RtlSdrError::Usb(...)`
+///   from the underlying USB control transfer, and the R82xx
+///   I2C path can return `I2cTransferFailed { operation, got,
+///   expected }` (raw byte-count mismatch on the I2C-write
+///   wrapper) or `ShadowCacheMiss { reg }` (caller used
+///   `write_reg_mask` before `init` populated the shadow).
+///
+/// Per audit pass-2 #73 — pre-fix the trait was silent on
+/// which TunerError variants each method could produce, forcing
+/// consumers to either match all of them or rely on `is_*`
+/// helpers that don't exist.
 pub trait Tuner: Send {
     /// Initialize the tuner.
     fn init(&mut self, handle: &rusb::DeviceHandle<rusb::GlobalContext>)
@@ -35,6 +65,11 @@ pub trait Tuner: Send {
     -> Result<(), RtlSdrError>;
 
     /// Set the tuner frequency in Hz.
+    ///
+    /// See trait-level "Errors" for the typed
+    /// [`crate::TunerError`] variants this method commonly
+    /// returns (`PllNotLocked`, `PllProgrammingFailed`,
+    /// `XtalIsZero`).
     fn set_freq(
         &mut self,
         handle: &rusb::DeviceHandle<rusb::GlobalContext>,
@@ -49,6 +84,10 @@ pub trait Tuner: Send {
     /// FC0013, FC2580) have no configurable IF and return `0`.
     /// Callers should treat `0` as "no IF change required" rather
     /// than "literal 0 Hz IF." Per audit issue #14.
+    ///
+    /// See trait-level "Errors" for the typed variants — most
+    /// notable here is `UnsupportedFilterBandwidth { mode }`
+    /// from the FC2580 backend.
     fn set_bw(
         &mut self,
         handle: &rusb::DeviceHandle<rusb::GlobalContext>,
@@ -57,6 +96,10 @@ pub trait Tuner: Send {
     ) -> Result<u32, RtlSdrError>;
 
     /// Set the tuner gain in tenths of dB.
+    ///
+    /// See trait-level "Errors" — the E4K backend can return
+    /// `InvalidGain { what, detail }` here; other backends
+    /// accept any value (they snap to the nearest table entry).
     fn set_gain(
         &mut self,
         handle: &rusb::DeviceHandle<rusb::GlobalContext>,
