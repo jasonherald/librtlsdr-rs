@@ -201,21 +201,35 @@ async fn dropping_stream_stops_worker() {
     // cadence on the happy path.
     drop(stream);
 
-    // Give the worker a moment to observe the drop. If the
-    // underlying USB reads were stalled the worst case would
-    // be ~5 s; happy path is much faster.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
     // Stronger assertion (per audit #21): drop the device and
     // re-open it. If the worker is still holding the USB
-    // interface claim, the re-open should succeed at the libusb
-    // level (libusb tolerates concurrent opens) but the
-    // claim_interface(0) inside RtlSdrDevice::open will fail
-    // with Resource Busy. Re-opening cleanly is indirect proof
-    // that the original worker exited and released the claim.
+    // interface claim, the re-open's `claim_interface(0)` inside
+    // `RtlSdrDevice::open` will fail with Resource Busy. Clean
+    // re-open is indirect proof the worker exited and released
+    // the claim.
+    //
+    // Bounded retry rather than a fixed sleep: the worker's
+    // observation latency depends on whether it was mid-read
+    // (~5 s `BULK_TIMEOUT` worst case while the in-flight
+    // `read_bulk` returns) or between reads (~one buffer
+    // cadence, ~65 ms on a healthy 2 Msps device). 500 ms works
+    // every time today against this hardware, but unlucky USB
+    // latency or a slow CI host could trip a fixed-sleep
+    // assertion intermittently. 6 s deadline (slightly above the
+    // documented worst case) with 100 ms backoff is robust
+    // without slowing the happy path. Per #21 round 2
+    // (Code Rabbit).
     drop(dev);
-    let reopened = RtlSdrDevice::open(0)
-        .expect("post-drop re-open should succeed if the worker fully released the device");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    let reopened = loop {
+        match RtlSdrDevice::open(0) {
+            Ok(dev) => break dev,
+            Err(RtlSdrError::Usb(rusb::Error::Busy)) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("post-drop re-open failed after bounded wait: {e}"),
+        }
+    };
     drop(reopened);
 }
 
