@@ -247,8 +247,15 @@ impl RtlSdrDevice {
             "set_offset_tuning: {} (offs_freq = {new_offs_freq} Hz)",
             if on { "on" } else { "off" },
         );
+        // Order matters: write the IF first, only update the
+        // cached `offs_freq` after success. Otherwise a failed IF
+        // write leaves the cache lying (new value cached, hardware
+        // on old IF), which would corrupt the next
+        // `freq_minus_offset` math in `set_center_freq`. Same
+        // partial-state shape #11 fixed for the `set_*_freq`
+        // family — extended here per audit pass-2 #41.
+        self.set_if_freq(new_offs_freq)?;
         self.offs_freq = new_offs_freq;
-        self.set_if_freq(self.offs_freq)?;
 
         if let Some(tuner) = &mut self.tuner {
             usb::set_i2c_repeater(&self.handle, true)?;
